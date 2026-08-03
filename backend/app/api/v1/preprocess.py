@@ -32,6 +32,7 @@ from app.api.v1.helpers import (
     ensure_external_sensor_download_dirs,
     is_legacy_s2_zip_band_raster,
     project_s1_preproceso_dir,
+    resolve_source_subpath,
     validate_upload_size,
 )
 from app.services.preprocess_pipeline_variant import (
@@ -3060,13 +3061,8 @@ def get_recorte_preview_disk(
 
     render_path = tif_path
     if normalize_pipeline_variant(pipeline_variant) == "ps":
-        if layer_match is not None:
-            try:
-                rp = _existing_raster_path(layer_match)
-                if rp.is_file():
-                    render_path = rp
-            except HTTPException:
-                pass
+        # Siempre el GeoTIFF de ``recortesPS/`` (no el COG antiguo en ``rasters/``):
+        # tras un recorte al polígono el COG de capa queda desactualizado.
         try:
             with rasterio.open(render_path) as _chk:
                 n_ps = int(_chk.count)
@@ -3074,7 +3070,6 @@ def get_recorte_preview_disk(
             n_ps = 0
         if n_ps >= 6:
             # Metadatos mínimos (evita ``s2_index_stack`` u otros flags heredados que alteran la RGB).
-            # Mismo archivo que el mapa cuando hay capa: COG en ``rasters/`` vía ``_existing_raster_path``.
             meta = {
                 "preview_rgb_bands": [6, 4, 2],
                 "planetscope_composite": True,
@@ -4014,8 +4009,7 @@ def preprocess_ps_planetscope_zip_extract(
 ):
     """
     Por cada ``*.zip`` en ``rasterPS/`` del proyecto: extrae ``composite.tif`` y metadatos (XML, JSON,
-    ``composite_udm2.tif``) a ``recortesPS/``; el composite se renombra a ``PS_dd-mm-yy.tif`` usando
-    ``YYYYMMDD_`` del nombre de un XML en la misma carpeta interna.
+    ``composite_udm2.tif``) a ``rasterPS/`` como ``PS_dd-mm-yy.tif`` (originales para el recorte).
     """
     from app.tasks.jobs import ps_planet_zip_extract_pipeline
 
@@ -4033,6 +4027,187 @@ def preprocess_ps_planetscope_zip_extract(
             detail=f"No se pudo encolar la extracción PS. ¿Redis y worker Celery? {exc!s}",
         ) from exc
     return {"status": "queued", "task_id": async_result.id}
+
+
+@router.get("/preprocess/ps-tif-inventory/{project_id}")
+def get_ps_tif_inventory(
+    project_id: int,
+    source: str = Query(
+        "rasterPS",
+        description="Carpeta origen del recorte: ``rasterPS`` (originales, por defecto) o ``recortesPS``.",
+    ),
+    source_subpath: str | None = Query(
+        None,
+        description="Si se envía, lista TIF en esa ruta (proyecto o ``ext:``). Si se omite, según ``source``.",
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    """Lista GeoTIFF a recortar en ``recortesPS/`` o ``rasterPS/`` (flujo PlanetScope)."""
+    from app.services.ps_recorte_clip import (
+        list_ps_clip_tifs,
+        normalize_ps_clip_source,
+        ps_clip_source_dir_name,
+    )
+
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    kind = normalize_ps_clip_source(source)
+    dir_label = ps_clip_source_dir_name(kind)
+
+    if source_subpath is None:
+        root = _tenant_storage(tenant_id, project_id, dir_label)
+    else:
+        root = resolve_source_subpath(tenant_id, project_id, source_subpath)
+        if root is None:
+            raise HTTPException(status_code=400, detail="Ruta de origen inválida o fuera del alcance permitido")
+
+    exists = root.is_dir()
+    items = []
+    if exists:
+        for p in list_ps_clip_tifs(root, kind):
+            bands = None
+            try:
+                with rasterio.open(p) as src:
+                    bands = int(src.count)
+            except Exception:
+                bands = None
+            items.append(
+                {
+                    "basename": p.name,
+                    "name": p.name,
+                    "bands": bands,
+                    "size_bytes": p.stat().st_size if p.is_file() else None,
+                }
+            )
+    return {
+        "items": items,
+        "source": kind,
+        "dir": dir_label,
+        "exists": exists,
+        "path": str(root),
+    }
+
+
+@router.post("/preprocess/ps-recorte-clip")
+async def preprocess_ps_recorte_clip(
+    project_id: int = Form(...),
+    layer_id: str | None = Form(None),
+    aoi_file: UploadFile | None = File(None),
+    source: str = Form("rasterPS"),
+    filenames_json: str | None = Form(
+        None,
+        description='JSON array de basenames a procesar, p. ej. ``["PS_23-03-26.tif"]``. Omitir = todos.',
+    ),
+    source_subpath: str | None = Form(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    """
+    Recorta GeoTIFF PlanetScope al polígono del proyecto (capa / unión) o a un AOI subido
+    (GeoJSON / ZIP shapefile).
+
+    Origen por defecto: ``rasterPS/`` (originales). Salida: ``recortesPS/`` (insumos de RGB e índices).
+    """
+    from app.services.ps_recorte_clip import normalize_ps_clip_source
+    from app.tasks.jobs import ps_recorte_clip_pipeline
+
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    kind = normalize_ps_clip_source(source)
+
+    lid = None
+    if layer_id is not None and str(layer_id).strip() != "":
+        try:
+            lid = int(layer_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="layer_id inválido")
+        if lid < 1:
+            raise HTTPException(status_code=400, detail="layer_id inválido")
+        found = (
+            db.query(Layer)
+            .filter(
+                Layer.id == lid,
+                Layer.project_id == project_id,
+                Layer.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not found:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No existe la capa vectorial {lid} en este proyecto.",
+            )
+
+    has_aoi_upload = bool(aoi_file and getattr(aoi_file, "filename", None))
+    wkt: str | None = None
+    if has_aoi_upload:
+        await validate_upload_size(aoi_file)
+        ext = Path(aoi_file.filename).suffix.lower()
+        allowed = {".geojson", ".json", ".zip"}
+        if ext not in allowed:
+            raise HTTPException(status_code=400, detail="AOI: use .geojson, .json o .zip (shapefile)")
+        raw = await aoi_file.read()
+        with tempfile.NamedTemporaryFile(suffix=ext, prefix="aoi_ps_", delete=False) as tf:
+            tf.write(raw)
+            tmp_path = Path(tf.name)
+        try:
+            from app.services.aoi_vector import geometry_wkt_from_vector_path
+
+            wkt, _meta = geometry_wkt_from_vector_path(tmp_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    else:
+        from app.services.project_geometry import wkt_union_from_project_layers
+
+        wkt = wkt_union_from_project_layers(db, project_id, tenant_id, lid)
+        if not wkt:
+            if lid is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"No se pudo leer geometría para la capa {lid} "
+                        "(archivo ausente o formato no soportado)."
+                    ),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No hay polígono vectorial en el proyecto. Carga un lote o sube un AOI "
+                    "(GeoJSON / ZIP shapefile)."
+                ),
+            )
+
+    if not wkt:
+        raise HTTPException(status_code=400, detail="AOI vacío o inválido.")
+
+    filenames: list[str] | None = None
+    if filenames_json is not None and str(filenames_json).strip():
+        try:
+            parsed = json.loads(filenames_json)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="filenames_json no es JSON válido") from exc
+        if not isinstance(parsed, list):
+            raise HTTPException(status_code=400, detail="filenames_json debe ser un array")
+        filenames = [str(x).strip() for x in parsed if str(x).strip()]
+        if not filenames:
+            raise HTTPException(status_code=400, detail="Selecciona al menos un TIF")
+
+    try:
+        async_result = ps_recorte_clip_pipeline.delay(
+            tenant_id,
+            project_id,
+            wkt,
+            kind,
+            filenames,
+            source_subpath,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo encolar el recorte PS. ¿Redis y worker Celery? {exc!s}",
+        ) from exc
+    return {"status": "queued", "task_id": async_result.id, "source": kind}
 
 
 @router.post("/preprocess/s2-l2a-recortes")

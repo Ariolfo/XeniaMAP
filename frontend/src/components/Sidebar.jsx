@@ -5,6 +5,7 @@ import LayersPanel from "./LayersPanel";
 import UploadPanel from "./UploadPanel";
 import PreprocessPanel from "./PreprocessPanel";
 import Sentinel1Panel from "./Sentinel1Panel";
+import { getClientBrand } from "../branding";
 
 function isS1StackMode(mode) {
   return (
@@ -112,6 +113,7 @@ export default function Sidebar({
   onLoadPersistedClusterGmmPs,
   onLoadPersistedClusterGmmS1,
   onPsPlanetExtract,
+  onPsRecorteClip,
   s2Download,
   s1Download,
   visualIndexGalleryKickPs = 0,
@@ -143,9 +145,16 @@ export default function Sidebar({
   const showStudyCta = !!token && isCliente;
   const canShowAdminTabs = isAdmin;
   const canShowClientDashboardTab = isCliente;
+  const brand = getClientBrand(email);
   return (
     <aside className="panel">
-      <img className="brand-logo" src="/logo-bioagro.png" alt="BioAgroMap" />
+      {brand.hideLogo ? (
+        <div className="brand-title-text" role="img" aria-label={brand.productName}>
+          {brand.productName}
+        </div>
+      ) : (
+        <img className="brand-logo" src={brand.logoSrc} alt={brand.logoAlt} />
+      )}
       <div className="top-tabs" role="tablist">
         <button
           role="tab"
@@ -591,6 +600,7 @@ export default function Sidebar({
           onLoadPersistedClusterGmm={onLoadPersistedClusterGmmPs}
           pipelineVariant="ps"
           onPsPlanetExtract={onPsPlanetExtract}
+          onPsRecorteClip={onPsRecorteClip}
         />
       ) : null}
 

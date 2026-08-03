@@ -68,16 +68,10 @@ export function allLandingSectionKeys() {
   return keys;
 }
 
-/** Proyectos donde el cliente no debe ver «Informe inteligente» (sí admin en edición). */
-export function shouldHideIaForClient(project) {
-  if (!project) return false;
-  const id = Number(project.id);
-  if (id === 14) return true;
-  const slug = String(project.name || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  return slug === "palm-10anos" || slug.includes("palm-10");
+/**
+ * Proyectos donde el cliente no debe ver «Informe inteligente» (sí admin en edición).
+ * Temporalmente desactivado: Palm_10años (id 14) vuelve a mostrar la sección 1.7.
+ */
+export function shouldHideIaForClient(_project) {
+  return false;
 }

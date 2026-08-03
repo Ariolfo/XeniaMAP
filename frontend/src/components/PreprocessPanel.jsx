@@ -252,6 +252,7 @@ export default function PreprocessPanel({
   preproClusterVizKick = 0,
   pipelineVariant = "s2",
   onPsPlanetExtract,
+  onPsRecorteClip,
 }) {
   const recDirLabel = pipelineVariant === "ps" ? "recortesPS" : "recortes";
   const idxDirLabel = pipelineVariant === "ps" ? "indecesPS" : "indices";
@@ -285,6 +286,13 @@ export default function PreprocessPanel({
   const [psSourceSubpath, setPsSourceSubpath] = useState(undefined);
   const [psFolderPickerOpen, setPsFolderPickerOpen] = useState(false);
   const [psZipInfo, setPsZipInfo] = useState(null);
+  const [psAoiFile, setPsAoiFile] = useState(null);
+  const [psClipSource, setPsClipSource] = useState("rasterPS");
+  const [psClipModalOpen, setPsClipModalOpen] = useState(false);
+  const [psClipInventory, setPsClipInventory] = useState(null);
+  const [psClipInventoryLoading, setPsClipInventoryLoading] = useState(false);
+  const [psClipError, setPsClipError] = useState("");
+  const [psClipSelected, setPsClipSelected] = useState(() => new Set());
   const [clusterPeekHint, setClusterPeekHint] = useState("");
   const [loadingClusterPersisted, setLoadingClusterPersisted] = useState(false);
   /** Inicializar con el kick actual para no reabrir galería/modales al remontar la pestaña S2/PS. */
@@ -405,6 +413,39 @@ export default function PreprocessPanel({
     } catch (e) {
       setPsZipInfo({ error: formatApiErrorDetail(e) });
     }
+  }
+
+  async function openPsClipModal() {
+    if (!projectId || !token) return;
+    setPsClipModalOpen(true);
+    setPsClipError("");
+    setPsClipSelected(new Set());
+    setPsClipInventoryLoading(true);
+    try {
+      setAuthToken(token);
+      const r = await api.get(`/preprocess/ps-tif-inventory/${projectId}`, {
+        params: { source: psClipSource },
+      });
+      setPsClipInventory(r.data);
+      const names = (r.data?.items || []).map((it) => it.basename || it.name).filter(Boolean);
+      setPsClipSelected(new Set(names));
+    } catch (e) {
+      setPsClipInventory(null);
+      setPsClipError(formatApiErrorDetail(e));
+    } finally {
+      setPsClipInventoryLoading(false);
+    }
+  }
+
+  function togglePsClipFile(name) {
+    const key = String(name).trim();
+    if (!key) return;
+    setPsClipSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }
 
   async function copyDownloadsFromSelectedProjectAndList() {
@@ -554,23 +595,10 @@ export default function PreprocessPanel({
           <div className="indices-section-title">
             <strong>1. Extraer archivo</strong>
           </div>
-          <label>
-            Polígono del proyecto (pasos posteriores: índices, cluster)
-            <select
-              value={recorteLayerId}
-              onChange={(e) => setRecorteLayerId(e.target.value)}
-              disabled={busy}
-            >
-              <option value="">Todos los lotes del proyecto (unión)</option>
-              {vectorLayers
-                .filter((l) => l.serverId != null && Number.isFinite(Number(l.serverId)))
-                .map((l) => (
-                  <option key={l.id} value={String(l.serverId)}>
-                    {l.name}
-                  </option>
-                ))}
-            </select>
-          </label>
+          <p className="l2a-downloads-hint">
+            Extrae composites desde ZIP a <code>rasterPS/</code> (originales). Luego recorta al polígono
+            hacia <code>recortesPS/</code>.
+          </p>
           <button
             type="button"
             className="indices-run-btn"
@@ -607,6 +635,64 @@ export default function PreprocessPanel({
             </button>
           </div>
           {psZipInfo?.error ? <p className="rgb-gallery-error">{psZipInfo.error}</p> : null}
+
+          <div className="indices-section-title" style={{ marginTop: 16 }}>
+            <strong>1b. Recortar TIF al polígono</strong>
+          </div>
+          <p className="l2a-downloads-hint">
+            Origen: originales en <code>rasterPS/</code> → recorte al lote/AOI → salida en{" "}
+            <code>recortesPS/</code> (RGB e índices usan solo <code>recortesPS/</code>).
+          </p>
+          <label>
+            Polígono del proyecto
+            <select
+              value={recorteLayerId}
+              onChange={(e) => setRecorteLayerId(e.target.value)}
+              disabled={busy}
+            >
+              <option value="">Todos los lotes del proyecto (unión)</option>
+              {vectorLayers
+                .filter((l) => l.serverId != null && Number.isFinite(Number(l.serverId)))
+                .map((l) => (
+                  <option key={l.id} value={String(l.serverId)}>
+                    {l.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label style={{ display: "block", marginTop: 8 }}>
+            AOI opcional (GeoJSON / ZIP)
+            <input
+              type="file"
+              accept=".geojson,.json,.zip,application/json,application/zip"
+              disabled={busy}
+              onChange={(e) => setPsAoiFile(e.target.files?.[0] || null)}
+              style={{ display: "block", marginTop: 4 }}
+            />
+            {psAoiFile ? (
+              <span className="l2a-downloads-hint">Archivo AOI: {psAoiFile.name}</span>
+            ) : null}
+          </label>
+          <label style={{ display: "block", marginTop: 8 }}>
+            Carpeta origen de TIF (originales)
+            <select
+              value={psClipSource}
+              onChange={(e) => setPsClipSource(e.target.value)}
+              disabled={busy}
+            >
+              <option value="rasterPS">rasterPS/ (originales, recomendado)</option>
+              <option value="recortesPS">recortesPS/ (re-recortar ya existentes)</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="indices-run-btn"
+            style={{ marginTop: 8 }}
+            onClick={() => void openPsClipModal()}
+            disabled={busy || !projectId || !token}
+          >
+            Listar TIF y recortar
+          </button>
         </>
       ) : (
         <>
@@ -942,6 +1028,111 @@ export default function PreprocessPanel({
                     Procesar recortes L2A
                   </button>
                 ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pipelineVariant === "ps" && psClipModalOpen ? (
+        <div
+          className="index-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ps-clip-modal-title"
+          onClick={() => setPsClipModalOpen(false)}
+        >
+          <div className="index-modal l2a-downloads-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="index-modal-header">
+              <h3 id="ps-clip-modal-title">TIF PlanetScope — selección para recorte</h3>
+              <button
+                type="button"
+                className="index-modal-close"
+                onClick={() => setPsClipModalOpen(false)}
+                aria-label="Cerrar"
+              >
+                ×
+              </button>
+            </div>
+            <div className="index-modal-body l2a-downloads-body">
+              <p className="l2a-downloads-intro">
+                Origen: <code>{psClipSource}/</code> (originales)
+                {psAoiFile
+                  ? ` · AOI subido: ${psAoiFile.name}`
+                  : recorteLayerId
+                    ? " · polígono de capa seleccionada"
+                    : " · unión de todos los lotes"}
+                . Salida en <code>recortesPS/</code> (RGB e índices).
+              </p>
+              {psClipInventoryLoading ? (
+                <p className="l2a-downloads-status">Cargando inventario…</p>
+              ) : null}
+              {psClipError ? <p className="rgb-gallery-error">{psClipError}</p> : null}
+              {!psClipInventoryLoading && psClipInventory ? (
+                <>
+                  {!psClipInventory.exists || !(psClipInventory.items || []).length ? (
+                    <p className="l2a-downloads-hint">
+                      No hay GeoTIFF en <code>{psClipSource}/</code>. Copia los originales ahí o
+                      extrae ZIPs a <code>recortesPS/</code> y muévelos a <code>rasterPS/</code>.
+                    </p>
+                  ) : (
+                    <ul className="l2a-product-list">
+                      {(psClipInventory.items || []).map((it) => {
+                        const name = it.basename || it.name;
+                        const checked = psClipSelected.has(name);
+                        return (
+                          <li key={name}>
+                            <label>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={busy}
+                                onChange={() => togglePsClipFile(name)}
+                              />{" "}
+                              {name}
+                              {it.bands != null ? ` · ${it.bands} bandas` : null}
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </>
+              ) : null}
+              <div className="l2a-downloads-actions">
+                <button type="button" className="rgb-gallery-btn-secondary" onClick={() => setPsClipModalOpen(false)}>
+                  Cerrar
+                </button>
+                <button
+                  type="button"
+                  className="rgb-gallery-btn-primary"
+                  disabled={
+                    busy ||
+                    !projectId ||
+                    !token ||
+                    psClipSelected.size === 0 ||
+                    psClipInventoryLoading ||
+                    (!hasVectors && !psAoiFile)
+                  }
+                  title={
+                    !hasVectors && !psAoiFile
+                      ? "Carga un lote vectorial o sube un AOI"
+                      : psClipSelected.size === 0
+                        ? "Selecciona al menos un TIF"
+                        : undefined
+                  }
+                  onClick={async () => {
+                    const layerId = recorteLayerId ? Number(recorteLayerId) : undefined;
+                    const names = [...psClipSelected];
+                    const ok = await onPsRecorteClip?.(layerId, names, psClipSource, psAoiFile);
+                    if (ok) {
+                      setPsClipModalOpen(false);
+                      setPsClipSelected(new Set());
+                    }
+                  }}
+                >
+                  Procesar recortes PS
+                </button>
               </div>
             </div>
           </div>

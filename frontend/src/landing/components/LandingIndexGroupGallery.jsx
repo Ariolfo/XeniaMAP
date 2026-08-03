@@ -49,7 +49,7 @@ export default function LandingIndexGroupGallery({
         <aside className="landing-index-theory landing-index-narrative-box" aria-live="polite">
           <h5 className="landing-index-theory-title">
             {activeCopy.title || String(activeIndexKey).toUpperCase()}{" "}
-            <strong className="landing-index-theory-badge">(Narrativa)</strong>
+            <strong className="landing-index-theory-badge">(Interpretación agricola)</strong>
           </h5>
           <LandingSectionNarrative
             sectionKey={activeKey}

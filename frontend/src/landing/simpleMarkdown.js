@@ -1,7 +1,7 @@
 /**
  * Markdown simple → HTML escapado (sin dependencias).
  * Soporta: párrafos, **negrita**, *cursiva*, `código`, #/##/###, listas -,
- * enlaces, imágenes ![alt](url) (http(s), /api/, data:image/).
+ * enlaces, imágenes ![alt](url) (http(s), /api/, /reports/, data:image/).
  */
 
 function escapeHtml(s) {
@@ -17,6 +17,8 @@ function isSafeImageSrc(src) {
   if (!s) return false;
   if (/^https?:\/\//i.test(s)) return true;
   if (s.startsWith("/api/")) return true;
+  // Estáticos del frontend (p. ej. mapas de mortalidad en /public/reports/images/)
+  if (s.startsWith("/reports/")) return true;
   if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(s)) return true;
   return false;
 }

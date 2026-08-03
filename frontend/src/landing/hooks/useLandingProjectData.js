@@ -168,27 +168,38 @@ export default function useLandingProjectData(projectId, token) {
       setSeriesLoading(true);
       setSeriesError("");
       try {
-        const [s1, s2, ps] = await Promise.all([
+        setAuthToken(token);
+        // Cada sensor por separado: un fallo S1/S2 no debe bloquear PS ni el clima.
+        const settled = await Promise.allSettled([
           loadSeriesForSensor("s1", selection),
           loadSeriesForSensor("s2", selection),
           loadSeriesForSensor("ps", selection),
         ]);
-        setSeriesBySensor({ s1, s2, ps });
-        try {
-          setAuthToken(token);
-          const c = await api.get("/preprocess/agroclimate-series", {
-            params: { project_id: Number(projectId) },
-          });
-          setClimateBySensor({
-            s1: c.data?.by_sensor?.s1 || [],
-            s2: c.data?.by_sensor?.s2 || [],
-            ps: c.data?.by_sensor?.ps || [],
-          });
-        } catch {
-          setClimateBySensor({ s1: [], s2: [], ps: [] });
+        const pick = (i) => (settled[i].status === "fulfilled" ? settled[i].value : null);
+        setSeriesBySensor({ s1: pick(0), s2: pick(1), ps: pick(2) });
+        const seriesErrs = settled
+          .map((r, i) => (r.status === "rejected" ? `${["s1", "s2", "ps"][i]}: ${r.reason?.message || r.reason}` : null))
+          .filter(Boolean);
+        if (seriesErrs.length === 3) {
+          setSeriesError(seriesErrs.join(" | "));
         }
       } catch (e) {
         setSeriesError(formatApiErrorDetail(e));
+      }
+
+      // Agroclima siempre (Open-Meteo), aunque fallen las series de índices.
+      try {
+        setAuthToken(token);
+        const c = await api.get("/preprocess/agroclimate-series", {
+          params: { project_id: Number(projectId) },
+        });
+        setClimateBySensor({
+          s1: c.data?.by_sensor?.s1 || [],
+          s2: c.data?.by_sensor?.s2 || [],
+          ps: c.data?.by_sensor?.ps || [],
+        });
+      } catch {
+        setClimateBySensor({ s1: [], s2: [], ps: [] });
       } finally {
         setSeriesLoading(false);
       }

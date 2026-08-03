@@ -28,6 +28,18 @@ body {
   height: auto;
 }
 
+.brand-title-text {
+  width: 100%;
+  max-width: 220px;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0.35rem 0.15rem;
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  color: #1e3a5f;
+}
+
 .panel button {
   padding: 8px;
 }

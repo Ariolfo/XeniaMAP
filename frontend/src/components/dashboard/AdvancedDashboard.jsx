@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import api, { API_URL, formatApiErrorDetail, loadStoredAuth, setAuthToken } from "../../api";
+import { getClientBrand } from "../../branding";
 import SensorTimelapseViewer from "./SensorTimelapseViewer";
 import ClientSoilViewModal from "./ClientSoilViewModal";
 import DemRoiEditor, { defaultRoi, soilRoiToQueryParam } from "./DemRoiEditor";
@@ -348,6 +349,7 @@ export default function AdvancedDashboard({
   projectId,
   projectName = "",
   isCliente = false,
+  viewerEmail = "",
   initialSmartFocus = "cluster",
   projectStatus,
   onOpenClientVisualization,
@@ -1122,26 +1124,30 @@ export default function AdvancedDashboard({
       ? roiSelection.polygon_points.map((p) => ({ x: Number(p.x), y: Number(p.y) }))
       : [];
     const roiPayload = roiPoints.length >= 3 ? { polygon_points: roiPoints } : null;
-    let data = null;
-    if (sensor === "s1") {
-      const res = await api.post("/preprocess/s1-sar-time-series", {
-        project_id: Number(projectId),
-        roi_selection: roiPayload,
-      });
-      data = res.data;
-    } else {
-      const pv = sensor === "ps" ? "ps" : "s2";
-      const res = await api.post("/preprocess/vegetation-time-series", {
-        project_id: Number(projectId),
-        pipeline_variant: pv,
-        max_pixel_series: 1800,
-        random_seed: 42,
-        roi_selection: roiPayload,
-      });
-      data = res.data;
+    try {
+      let data = null;
+      if (sensor === "s1") {
+        const res = await api.post("/preprocess/s1-sar-time-series", {
+          project_id: Number(projectId),
+          roi_selection: roiPayload,
+        });
+        data = res.data;
+      } else {
+        const pv = sensor === "ps" ? "ps" : "s2";
+        const res = await api.post("/preprocess/vegetation-time-series", {
+          project_id: Number(projectId),
+          pipeline_variant: pv,
+          max_pixel_series: 1800,
+          random_seed: 42,
+          roi_selection: roiPayload,
+        });
+        data = res.data;
+      }
+      seriesCacheRef.current.set(key, data);
+      return data;
+    } catch {
+      return null;
     }
-    seriesCacheRef.current.set(key, data);
-    return data;
   }
 
   async function loadAllSeries(options = {}) {
@@ -1149,34 +1155,39 @@ export default function AdvancedDashboard({
     if (!open || !projectId || clientDashboardBlocked) return;
     setSeriesLoading(true);
     try {
-      const [s1, s2, ps] = await Promise.all([
+      // Un fallo S1/S2 (sin stacks) no debe bloquear PS ni Open-Meteo.
+      const settled = await Promise.allSettled([
         loadSeriesForSensor("s1", { forceRefresh }),
         loadSeriesForSensor("s2", { forceRefresh }),
         loadSeriesForSensor("ps", { forceRefresh }),
       ]);
-      setSeriesBySensor({ s1, s2, ps });
+      const pick = (i) => (settled[i].status === "fulfilled" ? settled[i].value : null);
+      setSeriesBySensor({ s1: pick(0), s2: pick(1), ps: pick(2) });
+    } catch {
+      /* ignore — climate se carga abajo de todos modos */
+    }
 
-      let climatePayload = null;
-      try {
-        const c = await api.get("/preprocess/agroclimate-series", {
-          params: { project_id: Number(projectId) },
-        });
-        climatePayload = c.data;
-      } catch {
-        climatePayload = null;
-      }
-      setClimateBySensor({
-        s1: climatePayload?.by_sensor?.s1 || [],
-        s2: climatePayload?.by_sensor?.s2 || [],
-        ps: climatePayload?.by_sensor?.ps || [],
+    try {
+      if (effectiveToken) setAuthToken(effectiveToken);
+      const c = await api.get("/preprocess/agroclimate-series", {
+        params: { project_id: Number(projectId) },
       });
+      setClimateBySensor({
+        s1: c.data?.by_sensor?.s1 || [],
+        s2: c.data?.by_sensor?.s2 || [],
+        ps: c.data?.by_sensor?.ps || [],
+      });
+    } catch {
+      setClimateBySensor({ s1: [], s2: [], ps: [] });
     } finally {
       setSeriesLoading(false);
     }
   }
 
   useEffect(() => {
-    if (!open || !projectId || !sensorData.s1 || clientDashboardBlocked) return;
+    // Cargar series/clima con cualquier sensor disponible (no exigir S1).
+    const hasAnySensor = !!(sensorData?.s1 || sensorData?.s2 || sensorData?.ps);
+    if (!open || !projectId || !hasAnySensor || clientDashboardBlocked) return;
     void loadAllSeries();
   }, [open, projectId, sensorData, effectiveToken, clientDashboardBlocked]);
 
@@ -1256,13 +1267,14 @@ export default function AdvancedDashboard({
   if (!open) return null;
 
   const s = sensorActive;
+  const brand = getClientBrand(viewerEmail);
   return (
     <>
-    <div className="adv-dashboard-overlay" role="dialog" aria-modal="true" aria-label="BioAgroMap, dashboard multisensor espectral-espacio-temporal">
+    <div className="adv-dashboard-overlay" role="dialog" aria-modal="true" aria-label={brand.dashboardAria}>
       <div className="adv-dashboard-backdrop" onClick={onClose} />
       <div className="adv-dashboard-window">
         <div className="adv-dashboard-header">
-          <h2>BioAgroMap → Dashboard multisensor Espectral-Espacio-Temporal</h2>
+          <h2>{brand.dashboardTitle}</h2>
           <span className="adv-dashboard-project-pill">
             Proyecto: {projectName || `ID ${projectId || "—"}`}
           </span>
@@ -1957,7 +1969,12 @@ export default function AdvancedDashboard({
       ) : null}
     </div>
     {iaReportOpen ? (
-      <DashboardIaAnalysisModal open={iaReportOpen} onClose={() => setIaReportOpen(false)} iaContext={iaContext} />
+      <DashboardIaAnalysisModal
+        open={iaReportOpen}
+        onClose={() => setIaReportOpen(false)}
+        iaContext={iaContext}
+        viewerEmail={viewerEmail}
+      />
     ) : null}
     <ClientSoilViewModal
       open={geofisicaZoomOpen}

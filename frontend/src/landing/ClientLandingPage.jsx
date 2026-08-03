@@ -5,6 +5,7 @@ import api, {
   loadStoredAuth,
   persistAuthTokens,
 } from "../api";
+import { getClientBrand, persistViewerEmail } from "../branding";
 import {
   buildLandingMeta,
   isProjectPublished,
@@ -46,6 +47,7 @@ export default function ClientLandingPage({ mode: modeProp }) {
   const navigate = useNavigate();
   const [token, setToken] = useState(() => loadStoredAuth().access || "");
   const [userRole, setUserRole] = useState("");
+  const [viewerEmail, setViewerEmail] = useState("");
   const [projects, setProjects] = useState([]);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
@@ -60,6 +62,7 @@ export default function ClientLandingPage({ mode: modeProp }) {
 
   const editMode = isAdminRoute && isAdminUser && !adminViewAsClient;
   const narrativeView = editMode ? "draft" : "published";
+  const brand = getClientBrand(viewerEmail);
 
   const project = useMemo(
     () => resolveProjectFromParam(projects, proyectoParam),
@@ -105,6 +108,10 @@ export default function ClientLandingPage({ mode: modeProp }) {
         if (cancelled) return;
         const role = normalizeUserRole(me.data?.role);
         setUserRole(role);
+        if (me.data?.email) {
+          setViewerEmail(me.data.email);
+          persistViewerEmail(me.data.email);
+        }
         setProjects(projRes.data || []);
         if (isAdminRoute && role !== "admin") {
           setAuthError("Solo administradores pueden editar el informe narrativo.");
@@ -236,7 +243,7 @@ export default function ClientLandingPage({ mode: modeProp }) {
       <div className="landing-page landing-page--center">
         <h1>{project?.name}</h1>
         <p>
-          Los resultados aún no están publicados. Cuando el equipo BioAgro los apruebe, podrá verlos
+          Los resultados aún no están publicados. Cuando el equipo los apruebe, podrá verlos
           aquí.
         </p>
         <Link to="/" className="landing-cta">
@@ -251,8 +258,14 @@ export default function ClientLandingPage({ mode: modeProp }) {
       <div className="landing-content">
         <div className="landing-logo-bar">
           <div className="landing-logo-brand">
-            <img src="/logo-bioagro.png" alt="BioAgro" className="landing-logo-img" />
-            <p className="landing-logo-tagline">Agricultura más Inteligente con BioAgro</p>
+            {brand.hideLogo ? (
+              <p className="landing-logo-tagline landing-logo-tagline--solo">{brand.tagline}</p>
+            ) : (
+              <>
+                <img src={brand.logoSrc} alt={brand.logoAlt} className="landing-logo-img" />
+                <p className="landing-logo-tagline">{brand.tagline}</p>
+              </>
+            )}
           </div>
           <button
             type="button"
@@ -373,7 +386,7 @@ export default function ClientLandingPage({ mode: modeProp }) {
         ) : null}
 
         <footer className="landing-footer">
-          <p>Agricultura más inteligente con BioAgro</p>
+          <p>{brand.footerLine}</p>
           {aoiGeojson ? (
             <p className="landing-footer-note">
               Polígono del lote cargado desde sus datos de proyecto.

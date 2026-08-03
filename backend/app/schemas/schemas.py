@@ -231,14 +231,14 @@ class S1GrdRecorteRequest(BaseModel):
 
 
 class PsPlanetZipExtractRequest(BaseModel):
-    """Extrae ``composite.tif`` y metadatos desde zips PlanetScope hacia ``recortesPS/``."""
+    """Extrae ``composite.tif`` y metadatos desde zips PlanetScope hacia ``rasterPS/`` (originales)."""
 
     project_id: int
     source_subpath: str | None = Field(
         default=None,
         description=(
             "Origen de ZIP Planet: ruta bajo el proyecto, o ``ext:…`` en Data_Bioagro. "
-            "Si se omite, ``rasterPS/``."
+            "Si se omite, ``rasterPS/``. La salida del extract queda en ``rasterPS/``."
         ),
     )
 

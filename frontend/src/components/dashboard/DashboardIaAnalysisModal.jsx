@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
+import { getClientBrand } from "../../branding";
 import { ensureMortalidadFigures } from "./customIaReports";
 import useDashboardIaReport from "./useDashboardIaReport";
 
@@ -228,7 +229,7 @@ function ReportTable({ header, rows, keyPrefix }) {
   );
 }
 
-export default function DashboardIaAnalysisModal({ open, onClose, iaContext, embedded = false }) {
+export default function DashboardIaAnalysisModal({ open, onClose, iaContext, embedded = false, viewerEmail = "" }) {
   const printAreaRef = useRef(null);
   const [printing, setPrinting] = useState(false);
 
@@ -285,6 +286,8 @@ export default function DashboardIaAnalysisModal({ open, onClose, iaContext, emb
 
   if (!embedded && !open) return null;
 
+  const brand = getClientBrand(viewerEmail);
+
   const reportWindow = (
       <div
         ref={printAreaRef}
@@ -320,8 +323,10 @@ export default function DashboardIaAnalysisModal({ open, onClose, iaContext, emb
         <div className="adv-ia-body adv-ia-body--report" role="document">
           {isCustom ? (
             <header className="adv-ia-report-hero">
-              <img className="adv-ia-report-logo" src="/logo-bioagro.png" alt="BioAgroMap" />
-              <h2 className="adv-ia-report-hero-title">Agricultura más Inteligente con BioAgro</h2>
+              {brand.hideLogo ? null : (
+                <img className="adv-ia-report-logo" src={brand.logoSrc} alt={brand.logoAlt} />
+              )}
+              <h2 className="adv-ia-report-hero-title">{brand.tagline}</h2>
             </header>
           ) : null}
           {customLoading ? (

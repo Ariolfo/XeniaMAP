@@ -7,6 +7,7 @@ import api, {
   persistAuthTokens,
   setAuthToken,
 } from "./api";
+import { clearViewerEmail, persistViewerEmail, usesGeovisorBrand } from "./branding";
 import useMapLayers from "./hooks/useMapLayers";
 import {
   kmlToGeojson,
@@ -181,6 +182,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (usesGeovisorBrand(email)) {
+      document.title = "Geovisor Agricola";
+      return () => {
+        document.title = "BioAgroMap";
+      };
+    }
+    document.title = "BioAgroMap";
+    return undefined;
+  }, [email]);
+
+  useEffect(() => {
     if (!token) {
       setUserRole("");
       setProjects([]);
@@ -196,7 +208,10 @@ export default function App() {
         ]);
         if (cancelled) return;
         setUserRole(normalizeUserRole(meRes.data?.role));
-        if (meRes.data?.email) setEmail(meRes.data.email);
+        if (meRes.data?.email) {
+          setEmail(meRes.data.email);
+          persistViewerEmail(meRes.data.email);
+        }
         const restoreId = location.state?.restoreProjectId;
         if (restoreId && (projectList || []).some((p) => Number(p.id) === Number(restoreId))) {
           await selectProject(Number(restoreId), token);
@@ -377,12 +392,18 @@ export default function App() {
               head += "Sin recortes nuevos.";
             }
             setMessage(`${head}${aoiTxt}${engTxt}${errTxt}`.trim());
-          } else {
-            const psNote = recorteKind === "ps" ? " Salida en rasterPS/." : "";
+          } else if (pipeline === "ps_recorte_clip") {
+            const src = result.source || "recortesPS";
             setMessage(
               n > 0
-                ? `Proceso de recorte L2A terminado.${psNote} ${n} GeoTIFF de 6 bandas añadido(s) como capa(s).${errTxt}`
-                : `Proceso de recorte L2A terminado.${psNote} Sin nuevas capas.${errTxt || " Comprueba inventario L2A y polígono."}`
+                ? `Recorte PS terminado: ${n} GeoTIFF desde ${src}/ → recortesPS/.${errTxt}`
+                : `${result.message || "Recorte PS terminado sin archivos."}${errTxt}`
+            );
+          } else {
+            setMessage(
+              n > 0
+                ? `Proceso de recorte L2A terminado. ${n} GeoTIFF de 6 bandas añadido(s) como capa(s).${errTxt}`
+                : `Proceso de recorte L2A terminado. Sin nuevas capas.${errTxt || " Comprueba inventario L2A y polígono."}`
             );
           }
         } else if (r.data.ready && r.data.state === "FAILURE") {
@@ -395,7 +416,7 @@ export default function App() {
             recorteKind === "s1"
               ? "Recorte Sentinel-1"
               : recorteKind === "ps"
-                ? "Recorte PS (rasterPS/)"
+                ? "Recorte PS (recortesPS/)"
                 : recorteKind === "s2"
                   ? "Recorte Sentinel-2 L2A"
                   : "Recorte";
@@ -488,7 +509,7 @@ export default function App() {
           const ok = result.ok !== false && n > 0;
           setMessage(
             ok
-              ? `Extracción Planet PS terminada: ${n} composite(s) en recortesPS/.${errTxt}`
+              ? `Extracción Planet PS terminada: ${n} composite(s) en rasterPS/ (originales). Usa «Recortar TIF» → recortesPS/.${errTxt}`
               : `${result.message || "Sin composites extraídos; revisa zips en rasterPS/."}${errTxt}`
           );
           if (ok) await selectProject(projectId, token);
@@ -792,6 +813,7 @@ export default function App() {
       setToken(accessToken);
       setUserRole(normalizeUserRole(res.data?.role));
       persistAuthTokens(accessToken, res.data.refresh_token);
+      persistViewerEmail(effectiveEmail);
       const userProjects = await fetchProjects(accessToken);
       setMessage(`Cuenta creada. ${userProjects.length} proyecto(s) encontrado(s).`);
       navigate("/app");
@@ -822,6 +844,7 @@ export default function App() {
       setToken(accessToken);
       setUserRole(normalizeUserRole(res.data?.role));
       persistAuthTokens(accessToken, res.data.refresh_token);
+      persistViewerEmail(effectiveEmail);
       const userProjects = await fetchProjects(accessToken);
       setMessage(`Sesion iniciada. ${userProjects.length} proyecto(s) encontrado(s).`);
       setAuthStep("email");
@@ -901,6 +924,7 @@ export default function App() {
       setToken(accessToken);
       setUserRole(normalizeUserRole(res.data?.role));
       persistAuthTokens(accessToken, res.data.refresh_token);
+      persistViewerEmail(pendingRegEmail);
       const userProjects = await fetchProjects(accessToken);
       const tpw = res.data.temporary_password;
       if (tpw) {
@@ -926,6 +950,7 @@ export default function App() {
     setToken("");
     setUserRole("");
     clearAuthTokens();
+    clearViewerEmail();
     setProjectId("");
     setProjects([]);
     setTargetRasterId("");
@@ -1299,6 +1324,54 @@ export default function App() {
       setMessage(`Extracción Planet PS en cola (tarea ${res.data.task_id}).`);
     } catch (error) {
       setMessage(`Error: ${formatApiErrorDetail(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runPsRecorteClip(layerId, filenames, source = "rasterPS", aoiFile = null) {
+    if (!requireAdminAction()) return false;
+    if (!token || !projectId) {
+      setMessage("Error: inicia sesión y selecciona un proyecto.");
+      return false;
+    }
+    const names = Array.isArray(filenames)
+      ? [...new Set(filenames.map((s) => String(s).trim()).filter(Boolean))]
+      : [];
+    if (names.length === 0) {
+      setMessage("Selecciona al menos un GeoTIFF PlanetScope en la lista.");
+      return false;
+    }
+    setLoading(true);
+    setMessage("");
+    try {
+      setAuthToken(token);
+      const fd = new FormData();
+      fd.append("project_id", String(projectId));
+      fd.append("source", source === "rasterPS" ? "rasterPS" : "recortesPS");
+      fd.append("filenames_json", JSON.stringify(names));
+      if (aoiFile) {
+        fd.append("aoi_file", aoiFile);
+      } else if (layerId != null && layerId !== "") {
+        const n = Number(layerId);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+          setMessage(
+            "Error: el polígono elegido no tiene ID de capa válido en el servidor. Vuelve a cargar el proyecto o sube de nuevo el lote."
+          );
+          return false;
+        }
+        fd.append("layer_id", String(n));
+      }
+      const res = await api.post("/preprocess/ps-recorte-clip", fd);
+      setRecorteKind("ps");
+      setRecorteTaskId(res.data.task_id);
+      setMessage(
+        `Recorte PS en cola (tarea ${res.data.task_id}). Origen ${source === "rasterPS" ? "rasterPS" : "recortesPS"} → salida en recortesPS/.`
+      );
+      return true;
+    } catch (error) {
+      setMessage(`Error: ${formatApiErrorDetail(error)}`);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -1678,6 +1751,7 @@ export default function App() {
         onLoadPersistedClusterGmmPs={() => loadPersistedClusterGmm("ps")}
         onLoadPersistedClusterGmmS1={() => loadPersistedClusterGmm("s1")}
         onPsPlanetExtract={runPsPlanetExtract}
+        onPsRecorteClip={runPsRecorteClip}
         s2Download={s2Download}
         s1Download={s1Download}
       />
@@ -1698,6 +1772,7 @@ export default function App() {
         projectId={projectId}
         projectName={dashboardProjectName}
         isCliente={isCliente}
+        viewerEmail={email}
         initialSmartFocus={smartFocus}
         projectStatus={dashboardProjectStatus}
         onOpenClientVisualization={isCliente ? () => setClientVizModalOpen(true) : undefined}

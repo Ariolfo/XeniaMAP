@@ -1120,8 +1120,8 @@ def ps_planet_zip_extract_pipeline(
 ) -> dict:
     """
     Lee ``*.zip`` en la carpeta origen (por defecto ``rasterPS/``), extrae ``composite.tif`` y XML
-    hermanos a ``recortesPS/``, renombrando el composite a ``PS_dd-mm-yy.tif`` según prefijo YYYYMMDD_
-    en un XML.
+    hermanos a ``rasterPS/`` como ``PS_dd-mm-yy.tif`` (originales). El recorte al polígono
+    (paso 1b) escribe los insumos de RGB/índices en ``recortesPS/``.
     """
     from app.api.v1.helpers import _tenant_storage, resolve_source_subpath
     from app.services.planet_ps_extract import extract_planet_zips_from_raster_ps
@@ -1138,8 +1138,54 @@ def ps_planet_zip_extract_pipeline(
                 "message": "Ruta de origen inválida o fuera del alcance permitido",
                 "pipeline": "ps_planet_zip_extract",
             }
-    out_root = _tenant_storage(tenant_id, project_id, "recortesPS")
+    out_root = _tenant_storage(tenant_id, project_id, planet_zip_dir_name())
     return extract_planet_zips_from_raster_ps(raster_root, out_root)
+
+
+@celery_app.task(name="tasks.ps_recorte_clip_pipeline")
+def ps_recorte_clip_pipeline(
+    tenant_id: int,
+    project_id: int,
+    wkt: str,
+    source: str = "rasterPS",
+    filenames: list[str] | None = None,
+    source_subpath: str | None = None,
+) -> dict:
+    """
+    Recorta GeoTIFF PlanetScope desde ``rasterPS/`` (originales, por defecto) al polígono WKT.
+    Salida siempre en ``recortesPS/`` (insumos de RGB / índices).
+    """
+    from app.api.v1.helpers import _tenant_storage, resolve_source_subpath
+    from app.services.ps_recorte_clip import (
+        DEFAULT_PS_CLIP_SOURCE,
+        clip_ps_tifs_by_wkt,
+        normalize_ps_clip_source,
+        ps_clip_source_dir_name,
+    )
+
+    kind = normalize_ps_clip_source(source or DEFAULT_PS_CLIP_SOURCE)
+    if source_subpath is None:
+        source_root = _tenant_storage(tenant_id, project_id, ps_clip_source_dir_name(kind))
+    else:
+        source_root = resolve_source_subpath(tenant_id, project_id, source_subpath)
+        if source_root is None:
+            return {
+                "ok": False,
+                "error": "bad_path",
+                "message": "Ruta de origen inválida o fuera del alcance permitido",
+                "pipeline": "ps_recorte_clip",
+                "source": kind,
+            }
+    out_root = _tenant_storage(tenant_id, project_id, "recortesPS")
+    if not wkt or not str(wkt).strip():
+        return {
+            "ok": False,
+            "error": "no_wkt",
+            "message": "Polígono vacío o inválido.",
+            "pipeline": "ps_recorte_clip",
+            "source": kind,
+        }
+    return clip_ps_tifs_by_wkt(source_root, out_root, str(wkt).strip(), kind, filenames)
 
 
 @celery_app.task(name="tasks.landing_markdown_pipeline")
