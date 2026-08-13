@@ -645,7 +645,16 @@ export default function Sidebar({
       )}
       <div className="powered-by">
         <span>Powered by</span>
-        <img src="/wd-white.png" alt="WaveData" />
+        <div className="powered-by-logos">
+          <img
+            src={brand.poweredByLogoSrc || "/logo-xenia-positivo.png"}
+            alt={brand.poweredByLogoAlt || "Xenia"}
+          />
+          <img
+            src={brand.poweredByLogoSecondarySrc || "/logo-teraval.png"}
+            alt={brand.poweredByLogoSecondaryAlt || "Teraval"}
+          />
+        </div>
       </div>
     </aside>
   );
