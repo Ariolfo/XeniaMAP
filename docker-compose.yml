@@ -1,8 +1,10 @@
+name: xeniamap
+
 services:
   postgres:
     image: postgis/postgis:14-3.4
     environment:
-      POSTGRES_DB: bioagromap
+      POSTGRES_DB: xeniamap
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -29,7 +31,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/bioagromap
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
       REDIS_URL: redis://redis:6379/0
       STORAGE_PATH: /data/storage
       EXTERNAL_DATA_ROOT: /data_bioagro
@@ -63,7 +65,7 @@ services:
     # --concurrency=1: un solo proceso pesado (Sentinel-2) evita OOM / SIGKILL 9; --max-tasks-per-child libera RAM tras cada tarea.
     command: bash -lc "apt-get update && apt-get install -y libexpat1 && pip install -r requirements.txt && watchfiles --filter python 'celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=2' ."
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/bioagromap
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
       REDIS_URL: redis://redis:6379/0
       STORAGE_PATH: /data/storage
       EXTERNAL_DATA_ROOT: /data_bioagro
@@ -116,4 +118,7 @@ services:
       - prometheus
 
 volumes:
+  # Conserva datos del proyecto anterior (bioagromap_postgres_data)
   postgres_data:
+    external: true
+    name: bioagromap_postgres_data

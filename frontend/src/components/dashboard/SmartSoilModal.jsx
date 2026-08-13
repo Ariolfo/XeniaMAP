@@ -453,7 +453,7 @@ export default function SmartSoilModal({ open, onClose, token, projectId, projec
           {soilPlusError ? <span className="adv-soilplus-badge adv-soilplus-badge--err">{soilPlusError}</span> : null}
         </div>
         <p className="adv-soilplus-dem-path">
-          Imagen de entrada: <code>{soilDemInfo?.input_image_path || `/home/deep/Documentos/BioAgroMap/data/storage/tenant_activo/project_${projectId || "?"}/dem/band_1.tif`}</code>
+          Imagen de entrada: <code>{soilDemInfo?.input_image_path || `/home/deep/Documentos/XeniaMAP/data/storage/tenant_activo/project_${projectId || "?"}/dem/band_1.tif`}</code>
         </p>
         <div className="adv-dashboard-soil-body">
           <div className="adv-soilplus-top-row">

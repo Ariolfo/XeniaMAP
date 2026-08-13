@@ -7,7 +7,7 @@ import rasterio
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-app = FastAPI(title="BioAgroMap AI Service")
+app = FastAPI(title="XeniaMAP AI Service")
 RESULTS_DIR = Path("/data/ai_results")
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,6 +1,6 @@
 # Pastos_Playon
 
-Resultados satelitales del cultivo, en el mismo orden y agrupación que la **landing narrativa** de BioAgroMap.
+Resultados satelitales del cultivo, en el mismo orden y agrupación que la **landing narrativa** de XeniaMAP.
 
 - **Proyecto ID:** 19
 - **Estado:** publicado
@@ -814,4 +814,4 @@ _Sin texto narrativo publicado para esta sección._
 
 ---
 
-_Documento generado automáticamente desde la estructura de la landing narrativa (BioAgroMap)._
+_Documento generado automáticamente desde la estructura de la landing narrativa (XeniaMAP)._

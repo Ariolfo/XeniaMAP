@@ -1,1 +1,1 @@
-# BioAgroMap backend package
+# XeniaMAP backend package

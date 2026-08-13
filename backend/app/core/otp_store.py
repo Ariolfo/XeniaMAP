@@ -23,7 +23,7 @@ def set_otp(email: str, code: str, ttl_sec: int = 600) -> None:
     key_email = email.strip().lower()
     r = _redis()
     if r:
-        r.setex(f"bioagromap:otp:{key_email}", ttl_sec, code)
+        r.setex(f"xeniamap:otp:{key_email}", ttl_sec, code)
     else:
         _mem[key_email] = (code, time.time() + ttl_sec)
     logger.info("OTP almacenado para verificación de correo (dominio=%s)", key_email.split("@")[-1])
@@ -33,7 +33,7 @@ def verify_and_consume_otp(email: str, code: str) -> bool:
     key_email = email.strip().lower()
     r = _redis()
     if r:
-        key = f"bioagromap:otp:{key_email}"
+        key = f"xeniamap:otp:{key_email}"
         stored = r.get(key)
         if not stored or not secrets.compare_digest(stored.strip(), code.strip()):
             return False
@@ -57,6 +57,6 @@ def peek_otp_for_dev(email: str) -> str | None:
     key_email = email.strip().lower()
     r = _redis()
     if r:
-        return r.get(f"bioagromap:otp:{key_email}")
+        return r.get(f"xeniamap:otp:{key_email}")
     tup = _mem.get(key_email)
     return tup[0] if tup else None

@@ -211,7 +211,7 @@ def db_connect(database_url: str | None):
     if database_url:
         return psycopg2.connect(database_url)
     return psycopg2.connect(
-        host="localhost", port=5433, dbname="bioagromap", user="postgres", password="postgres"
+        host="localhost", port=5433, dbname="xeniamap", user="postgres", password="postgres"
     )
 
 
@@ -1234,7 +1234,7 @@ def build_markdown(
     lines: list[str] = [
         f"# {name} — {sensor_title}",
         "",
-        f"Resultados de **{sensor_title}**, en el mismo orden y agrupación que la **landing narrativa** de BioAgroMap.",
+        f"Resultados de **{sensor_title}**, en el mismo orden y agrupación que la **landing narrativa** de XeniaMAP.",
         "",
         f"- **Proyecto ID:** {pid}",
         f"- **Estado:** {project.get('status', '—')}",
@@ -1431,7 +1431,7 @@ def build_markdown(
             *[f"- {warning}" for warning in image_warnings],
             "",
         ]
-    lines.append("_Documento generado automáticamente desde la estructura de la landing narrativa (BioAgroMap)._")
+    lines.append("_Documento generado automáticamente desde la estructura de la landing narrativa (XeniaMAP)._")
     return "\n".join(lines)
 
 

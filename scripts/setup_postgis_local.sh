@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB_NAME="${POSTGRES_DB:-bioagromap}"
+DB_NAME="${POSTGRES_DB:-xeniamap}"
 DB_USER="${POSTGRES_USER:-postgres}"
 DB_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 

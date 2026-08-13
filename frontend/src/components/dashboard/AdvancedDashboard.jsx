@@ -1779,7 +1779,7 @@ export default function AdvancedDashboard({
               Imagen de entrada:{" "}
               <code>
                 {soilDemInfo?.input_image_path ||
-                  `/home/deep/Documentos/BioAgroMap/data/storage/tenant_activo/project_${projectId || "?"}/dem/band_1.tif`}
+                  `/home/deep/Documentos/XeniaMAP/data/storage/tenant_activo/project_${projectId || "?"}/dem/band_1.tif`}
               </code>
             </p>
             <div className="adv-soilplus-window-scroll">

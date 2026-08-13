@@ -13,7 +13,7 @@ def _default_storage_path() -> str:
     Sin STORAGE_PATH en el entorno: misma carpeta que en compose (``./data:/data`` → ``/data/storage``)
     o, en desarrollo local, ``<repo>/data/storage`` (p. ej. recortes en tenant_X/project_Y/recortes).
 
-    En contenedor suele existir ``/data/storage``; en el repo local suele existir ``…/BioAgroMap/backend``.
+    En contenedor suele existir ``/data/storage``; en el repo local suele existir ``…/XeniaMAP/backend``.
     """
     core_dir = Path(__file__).resolve().parent
     railway_mount = Path(os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()) if os.getenv("RAILWAY_VOLUME_MOUNT_PATH") else None
@@ -53,13 +53,13 @@ def _settings_model_config() -> SettingsConfigDict:
 
 
 class Settings(BaseSettings):
-    app_name: str = "BioAgroMap API"
+    app_name: str = "XeniaMAP API"
     api_v1_prefix: str = "/api/v1"
     secret_key: str = ""
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_minutes: int = 60 * 24 * 7
-    database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/bioagromap"
+    database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/xeniamap"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
     cors_origin_regex: str = ""
     redis_url: str = "redis://localhost:6379/0"

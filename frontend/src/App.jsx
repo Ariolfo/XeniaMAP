@@ -185,10 +185,10 @@ export default function App() {
     if (usesGeovisorBrand(email)) {
       document.title = "Geovisor Agricola";
       return () => {
-        document.title = "BioAgroMap";
+        document.title = "XeniaMAP";
       };
     }
-    document.title = "BioAgroMap";
+    document.title = "XeniaMAP";
     return undefined;
   }, [email]);
 

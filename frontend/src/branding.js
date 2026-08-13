@@ -3,7 +3,7 @@
  * Para caugusto.vargas@gmail.com: sin logos BioAgro, solo «Geovisor Agricola».
  */
 
-const SK_EMAIL = "bioagromap_email";
+const SK_EMAIL = "xeniamap_email";
 
 /** Correos con marca alternativa (temporal). */
 export const GEOVISOR_BRAND_EMAILS = new Set(["caugusto.vargas@gmail.com"]);
@@ -16,11 +16,11 @@ export const DEFAULT_BRAND = {
   poweredByLogoAlt: "Xenia",
   poweredByLogoSecondarySrc: "/logo-teraval.png",
   poweredByLogoSecondaryAlt: "Teraval",
-  productName: "BioAgroMap",
+  productName: "XeniaMAP",
   tagline: "Agricultura más Inteligente con Xenia & Teraval",
   footerLine: "Agricultura más inteligente con Xenia & Teraval",
-  dashboardTitle: "BioAgroMap → Dashboard multisensor Espectral-Espacio-Temporal",
-  dashboardAria: "BioAgroMap, dashboard multisensor espectral-espacio-temporal",
+  dashboardTitle: "XeniaMAP → Dashboard multisensor Espectral-Espacio-Temporal",
+  dashboardAria: "XeniaMAP, dashboard multisensor espectral-espacio-temporal",
 };
 
 export const GEOVISOR_BRAND = {

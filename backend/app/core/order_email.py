@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def send_study_order_notification(*, order_id: int, user_email: str, lines: list[str]) -> None:
     to_addr = (settings.order_notify_email or "").strip() or "ariolfo.camacho@saber.uis.edu.co"
-    subject = f"[BioAgroMap] Nueva solicitud AgroGeoFísico #{order_id}"
+    subject = f"[XeniaMAP] Nueva solicitud AgroGeoFísico #{order_id}"
     body = "\n".join(lines)
     logger.info("Solicitud estudio #%s — resumen (notificación)\n%s", order_id, body)
     host = (settings.smtp_host or "").strip()

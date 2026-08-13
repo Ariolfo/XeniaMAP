@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Volcado SQL de la base BioAgroMap (Postgres/PostGIS) y empaquetado en .zip.
+# Volcado SQL de la base XeniaMAP (Postgres/PostGIS) y empaquetado en .zip.
 # Por defecto usa el servicio ``postgres`` de Docker Compose en la raíz del repo
 # (levanta el contenedor si está parado). Si Docker no está disponible, intenta
 # ``pg_dump`` contra localhost:5433 (puerto del compose en el host).
@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-POSTGRES_DB="${POSTGRES_DB:-bioagromap}"
+POSTGRES_DB="${POSTGRES_DB:-xeniamap}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
@@ -29,7 +29,7 @@ for arg in "$@"; do
     --no-start) NO_START=1 ;;
     -h|--help)
       echo "Uso: $0 [--no-start]"
-      echo "  Genera backups/bioagromap_backup_YYYYMMDD_HHMMSS.zip (pg_dump -F p)."
+      echo "  Genera backups/xeniamap_backup_YYYYMMDD_HHMMSS.zip (pg_dump -F p)."
       echo "  Variables: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, BACKUP_OUT_DIR, POSTGRES_HOST, POSTGRES_PORT"
       echo "  --no-start  No ejecuta «docker compose up -d postgres» si el servicio está parado."
       exit 0
@@ -40,8 +40,8 @@ done
 OUT_DIR="${BACKUP_OUT_DIR:-$ROOT/backups}"
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
-DUMP_NAME="bioagromap_${STAMP}.sql"
-ZIP_NAME="bioagromap_backup_${STAMP}.zip"
+DUMP_NAME="xeniamap_${STAMP}.sql"
+ZIP_NAME="xeniamap_backup_${STAMP}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

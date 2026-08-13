@@ -5,7 +5,7 @@
 #
 # Antes: pip install -r requirements.txt (incluye watchfiles y celery).
 # Variables típicas en local (ajusta a tu máquina; puedes ponerlas en .env en la raíz del repo):
-#   export DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/bioagromap
+#   export DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/xeniamap
 #   export REDIS_URL=redis://localhost:6379/0
 #   export STORAGE_PATH=/ruta/al/repo/data/storage
 

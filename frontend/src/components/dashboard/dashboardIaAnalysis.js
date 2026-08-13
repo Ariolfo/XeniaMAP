@@ -282,7 +282,7 @@ function palmIntroBlock(ctx) {
   return (
     `Lote **«${label}»**, interpretado como **palma aceitera africana (*Elaeis guineensis*)** en **Colombia**.${ageBit} ` +
     "A esta etapa el dosel tiende a estar **cerrado**; la rentabilidad agronómica depende de **uniformidad del stand**, control de **lucanas** y del **estrés abiótico** (sequías, picos térmicos, radiación). " +
-    "Lo que sigue sintetiza **únicamente** imágenes, índices, clima y salidas de suelo/cluster ya calculadas en BioAgroMap para este polígono."
+    "Lo que sigue sintetiza **únicamente** imágenes, índices, clima y salidas de suelo/cluster ya calculadas en XeniaMAP para este polígono."
   );
 }
 
