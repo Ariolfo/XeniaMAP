@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import api, { setAuthToken } from "../../api";
-import OrderPreviewMap from "../OrderPreviewMap";
 import BrandHeader from "../BrandHeader";
 import ProjectList from "../ProjectList";
 
@@ -38,8 +37,9 @@ export default function FirePanel({
   isAdmin,
   email,
   onStatusMessage,
-  onSelectProject,
   onProjectsRefresh,
+  onFireOrderFocus,
+  onClearFireMap,
 }) {
   const [rows, setRows] = useState([]);
   const [detail, setDetail] = useState(null);
@@ -152,10 +152,8 @@ export default function FirePanel({
         if (cancelled) return;
         const d = res.data;
         setDetail(d);
-        if (d?.project_id) {
-          setSelectedProjectId(d.project_id);
-          onSelectProject?.(d.project_id);
-        }
+        if (d?.project_id) setSelectedProjectId(d.project_id);
+        onFireOrderFocus?.(d, { fit: true });
       } catch (_) {
         /* ignore auto-open errors */
       }
@@ -170,6 +168,14 @@ export default function FirePanel({
     setDetail(null);
     setPollMsg("");
     setBusy("");
+    onClearFireMap?.();
+  }
+
+  function backToOrders() {
+    setDetail(null);
+    setPollMsg("");
+    setBusy("");
+    onClearFireMap?.();
   }
 
   function openClient(group) {
@@ -177,6 +183,7 @@ export default function FirePanel({
     setDetail(null);
     setPollMsg("");
     setBusy("");
+    onClearFireMap?.();
     onStatusMessage?.(
       `Fire · cliente ${group.name || group.email}: ${group.orders.length} solicitud(es).`
     );
@@ -197,10 +204,8 @@ export default function FirePanel({
       setMaxCloud(Number(d.max_cloud_cover ?? 95));
       setFireStart(d.pre_end || "2026-08-01");
       setFireEnd(d.post_end || todayIso());
-      if (d?.project_id) {
-        setSelectedProjectId(d.project_id);
-        if (!isAdmin && onSelectProject) onSelectProject(d.project_id);
-      }
+      if (d?.project_id) setSelectedProjectId(d.project_id);
+      onFireOrderFocus?.(d, { fit: true });
     } catch (e) {
       setError(e?.response?.data?.detail || e?.message || "Error al cargar detalle");
     }
@@ -208,15 +213,14 @@ export default function FirePanel({
 
   async function openClientProject(projectId) {
     setSelectedProjectId(projectId);
-    onSelectProject?.(projectId);
     const order = orderByProjectId.get(Number(projectId));
     if (order?.id) {
       await openDetail(order.id);
       return;
     }
-    // Sin fire-order vinculado: solo capas del proyecto
     setDetail(null);
     setError("");
+    onClearFireMap?.();
   }
 
   async function pollPipeline(orderId, doneStatuses) {
@@ -233,6 +237,7 @@ export default function FirePanel({
       if (doneStatuses.includes(String(d?.status || ""))) {
         setBusy("");
         onStatusMessage?.(`Fire #${orderId}: ${d.status}`);
+        onFireOrderFocus?.(d, { fit: false });
         return true;
       }
       if (d?.status === "error") {
@@ -363,7 +368,7 @@ export default function FirePanel({
               ? showAdminClientPicker
                 ? "Seleccione un cliente para ver y procesar sus solicitudes municipales."
                 : `Cliente: ${selectedClient?.name || selectedClient?.email || "—"}. Pipeline: 01 S2 → 02 dNBR → 03 FIRMS.`
-              : "Sus proyectos Fire. Seleccione uno para ver el polígono y el estado del análisis."}
+              : "Sus proyectos Fire. Seleccione uno para ver el polígono en el mapa."}
           </p>
         </div>
         <button type="button" className="fire-btn" onClick={loadList} disabled={loading}>
@@ -375,7 +380,7 @@ export default function FirePanel({
       {pollMsg && isAdmin ? <div className="status-msg">{pollMsg}</div> : null}
 
       {!isAdmin ? (
-        <div className="fire-split">
+        <div className="fire-split fire-split--list-only">
           <div className="fire-list fire-client-projects">
             <ProjectList
               projects={clientProjectList}
@@ -394,49 +399,13 @@ export default function FirePanel({
               title="Mis proyectos Fire"
               hideSessionHeader
             />
-          </div>
-          <div className="fire-detail">
-            {!detail ? (
-              <div className="status-msg">
-                {clientProjectList.length
-                  ? "Seleccione un proyecto Fire para ver el polígono y el estado."
-                  : "Aún no tiene proyectos Fire asignados."}
-              </div>
-            ) : (
-              <>
-                <h3 className="fire-detail-title">{detail.request_name}</h3>
-                <div className="fire-meta-grid">
-                  <div>
-                    <strong>Proyecto</strong>
-                    <div>{detail.project_name || `Fire — ${detail.request_name}`}</div>
-                    <div className="muted">{detail.applicant_email}</div>
-                  </div>
-                  <div>
-                    <strong>Estado</strong>
-                    <div>{detail.status}</div>
-                    <div className="muted">
-                      PRE {detail.pre_start} → {detail.pre_end}
-                      <br />
-                      POST {detail.post_start} → {detail.post_end}
-                    </div>
-                  </div>
-                </div>
-                <div className="fire-map-wrap">
-                  <OrderPreviewMap geojson={detail.geometry} />
-                </div>
-                <div className="fire-download-box">
-                  <p className="fire-hint">
-                    El polígono también queda en Capas del mapa al seleccionar el proyecto. Los
-                    resultados del pipeline (dNBR / FIRMS) aparecerán cuando el administrador los
-                    complete.
-                  </p>
-                </div>
-              </>
-            )}
+            {!loading && clientProjectList.length === 0 ? (
+              <div className="status-msg">Aún no tiene proyectos Fire asignados.</div>
+            ) : null}
           </div>
         </div>
       ) : (
-      <div className="fire-split">
+      <div className="fire-split fire-split--list-only">
         <div className="fire-list">
           {showAdminClientPicker ? (
             <>
@@ -476,7 +445,7 @@ export default function FirePanel({
             </>
           ) : null}
 
-          {showOrderList ? (
+          {showOrderList && !detail ? (
             <>
               <div className="fire-list-title-row">
                 <button type="button" className="fire-btn fire-btn-back" onClick={backToClients}>
@@ -510,129 +479,129 @@ export default function FirePanel({
               </ul>
             </>
           ) : null}
-        </div>
 
-        <div className="fire-detail">
-          {showAdminClientPicker ? (
-            <div className="status-msg">
-              Elija un cliente a la izquierda para ver sus municipios y ejecutar el pipeline.
-            </div>
-          ) : !detail ? (
-            <div className="status-msg">Seleccione una solicitud para ver el polígono.</div>
-          ) : (
+          {showOrderList && detail ? (
             <>
-              <h3 className="fire-detail-title">{detail.request_name}</h3>
-              <div className="fire-meta-grid">
-                <div>
-                  <strong>Solicitante</strong>
-                  <div>{detail.applicant_name}</div>
-                  <div className="muted">{detail.applicant_email}</div>
+              <div className="fire-list-title-row">
+                <button type="button" className="fire-btn fire-btn-back" onClick={backToOrders}>
+                  ← Solicitudes
+                </button>
+              </div>
+              <div className="fire-focused-order">
+                <div className="fire-focused-order-name">{detail.request_name}</div>
+                <div className="fire-focused-order-meta">
+                  #{detail.id} · {detail.status}
+                  {detail.department ? ` · ${detail.department}` : ""}
                 </div>
-                <div>
-                  <strong>Estado</strong>
-                  <div>{detail.status}</div>
-                  <div className="muted">
-                    {detail.project_name ||
-                      detail.results_root ||
-                      detail.data_root ||
-                      "Sin resultados aún"}
+              </div>
+
+              <div className="fire-detail fire-detail--stacked">
+                <div className="fire-meta-compact">
+                  <div>
+                    <strong>Solicitante</strong>
+                    <div>{detail.applicant_name || detail.applicant_email}</div>
+                    {detail.applicant_name && detail.applicant_email ? (
+                      <div className="muted">{detail.applicant_email}</div>
+                    ) : null}
+                  </div>
+                  <div>
+                    <strong>Proyecto</strong>
+                    <div className="muted">
+                      {detail.project_name || `Fire — ${detail.request_name}`}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="fire-map-wrap">
-                <OrderPreviewMap geojson={detail.geometry} />
-              </div>
-
-              <div className="fire-download-box">
-                <h4>1. Descargar Sentinel-2 L2A</h4>
-                <div className="fire-dates-grid">
-                  <label>
-                    PRE inicio
-                    <input type="date" value={preStart} onChange={(e) => setPreStart(e.target.value)} />
-                  </label>
-                  <label>
-                    PRE fin
-                    <input type="date" value={preEnd} onChange={(e) => setPreEnd(e.target.value)} />
-                  </label>
-                  <label>
-                    POST inicio
-                    <input type="date" value={postStart} onChange={(e) => setPostStart(e.target.value)} />
-                  </label>
-                  <label>
-                    POST fin
-                    <input type="date" value={postEnd} onChange={(e) => setPostEnd(e.target.value)} />
-                  </label>
-                  <label>
-                    MAX_CLOUD_COVER (%)
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={maxCloud}
-                      onChange={(e) => setMaxCloud(e.target.value)}
-                    />
-                  </label>
+                <div className="fire-download-box">
+                  <h4>1. Descargar Sentinel-2 L2A</h4>
+                  <div className="fire-dates-grid">
+                    <label>
+                      PRE inicio
+                      <input type="date" value={preStart} onChange={(e) => setPreStart(e.target.value)} />
+                    </label>
+                    <label>
+                      PRE fin
+                      <input type="date" value={preEnd} onChange={(e) => setPreEnd(e.target.value)} />
+                    </label>
+                    <label>
+                      POST inicio
+                      <input type="date" value={postStart} onChange={(e) => setPostStart(e.target.value)} />
+                    </label>
+                    <label>
+                      POST fin
+                      <input type="date" value={postEnd} onChange={(e) => setPostEnd(e.target.value)} />
+                    </label>
+                    <label>
+                      MAX_CLOUD_COVER (%)
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={maxCloud}
+                        onChange={(e) => setMaxCloud(e.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="fire-btn fire-btn-primary"
+                    disabled={!!busy}
+                    onClick={startDownload}
+                  >
+                    {busy === "download" ? "Descargando…" : "Descargar S2"}
+                  </button>
+                  {detail.download_message ? <pre className="fire-log">{detail.download_message}</pre> : null}
                 </div>
-                <button
-                  type="button"
-                  className="fire-btn fire-btn-primary"
-                  disabled={!!busy}
-                  onClick={startDownload}
-                >
-                  {busy === "download" ? "Descargando…" : "Descargar S2"}
-                </button>
-                {detail.download_message ? <pre className="fire-log">{detail.download_message}</pre> : null}
-              </div>
 
-              <div className="fire-download-box" style={{ marginTop: 10 }}>
-                <h4>2. Procesar dNBR / severidad</h4>
-                <p className="fire-hint">
-                  Metodología script 02: MNDWI agua PRE, mediana NBR, dNBR, severidad, candidatos ≥0.15 /
-                  ≥2 ha, RGB COG.
-                </p>
-                <button
-                  type="button"
-                  className="fire-btn fire-btn-primary"
-                  disabled={!!busy || !canProcess}
-                  onClick={startProcess}
-                  title={!canProcess ? "Requiere descarga S2 completada" : "Ejecutar dNBR"}
-                >
-                  {busy === "process" ? "Procesando…" : "Procesar dNBR"}
-                </button>
-                {detail.process_message ? <pre className="fire-log">{detail.process_message}</pre> : null}
-              </div>
-
-              <div className="fire-download-box" style={{ marginTop: 10 }}>
-                <h4>3. Validar con FIRMS / VIIRS</h4>
-                <p className="fire-hint">
-                  Metodología script 03: hotspots VIIRS como evidencia positiva (no veto). Requiere{" "}
-                  <code>FIRMS_MAP_KEY</code>.
-                </p>
-                <div className="fire-dates-grid">
-                  <label>
-                    FIRMS inicio
-                    <input type="date" value={fireStart} onChange={(e) => setFireStart(e.target.value)} />
-                  </label>
-                  <label>
-                    FIRMS fin
-                    <input type="date" value={fireEnd} onChange={(e) => setFireEnd(e.target.value)} />
-                  </label>
+                <div className="fire-download-box" style={{ marginTop: 10 }}>
+                  <h4>2. Procesar dNBR / severidad</h4>
+                  <p className="fire-hint">
+                    Metodología script 02: MNDWI agua PRE, mediana NBR, dNBR, severidad, candidatos ≥0.15 /
+                    ≥2 ha, RGB COG.
+                  </p>
+                  <button
+                    type="button"
+                    className="fire-btn fire-btn-primary"
+                    disabled={!!busy || !canProcess}
+                    onClick={startProcess}
+                    title={!canProcess ? "Requiere descarga S2 completada" : "Ejecutar dNBR"}
+                  >
+                    {busy === "process" ? "Procesando…" : "Procesar dNBR"}
+                  </button>
+                  {detail.process_message ? <pre className="fire-log">{detail.process_message}</pre> : null}
                 </div>
-                <button
-                  type="button"
-                  className="fire-btn fire-btn-primary"
-                  disabled={!!busy || !canFirms}
-                  onClick={startFirms}
-                  title={!canFirms ? "Requiere dNBR procesado" : "Ejecutar FIRMS"}
-                >
-                  {busy === "firms" ? "Validando…" : "Validar FIRMS"}
-                </button>
-                {detail.firms_message ? <pre className="fire-log">{detail.firms_message}</pre> : null}
+
+                <div className="fire-download-box" style={{ marginTop: 10 }}>
+                  <h4>3. Validar con FIRMS / VIIRS</h4>
+                  <p className="fire-hint">
+                    Metodología script 03: hotspots VIIRS como evidencia positiva (no veto). Requiere{" "}
+                    <code>FIRMS_MAP_KEY</code>.
+                  </p>
+                  <div className="fire-dates-grid">
+                    <label>
+                      FIRMS inicio
+                      <input type="date" value={fireStart} onChange={(e) => setFireStart(e.target.value)} />
+                    </label>
+                    <label>
+                      FIRMS fin
+                      <input type="date" value={fireEnd} onChange={(e) => setFireEnd(e.target.value)} />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="fire-btn fire-btn-primary"
+                    disabled={!!busy || !canFirms}
+                    onClick={startFirms}
+                    title={!canFirms ? "Requiere dNBR procesado" : "Ejecutar FIRMS"}
+                  >
+                    {busy === "firms" ? "Validando…" : "Validar FIRMS"}
+                  </button>
+                  {detail.firms_message ? <pre className="fire-log">{detail.firms_message}</pre> : null}
+                </div>
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </div>
       )}

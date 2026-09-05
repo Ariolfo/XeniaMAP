@@ -18,7 +18,7 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 
-from app.api.v1.helpers import project_s1_preproceso_dir
+from app.core.storage_paths import project_s1_preproceso_dir
 
 
 def _safe_relative_under(root: Path, p: Path) -> str | None:

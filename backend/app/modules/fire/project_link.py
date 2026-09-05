@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.api.v1.helpers import _tenant_storage
+from app.core.storage_paths import _tenant_storage
 from app.core.config import settings
 from app.models.models import FireOrder, Layer, Project, User
 

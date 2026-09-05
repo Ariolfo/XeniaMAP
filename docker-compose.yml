@@ -24,7 +24,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/data
-      # Datos grandes locales (recorte sin copiar al proyecto). Host: /mnt/disco3tb/Data_Bioagro
+      # Disco externo (recorte sin copiar al proyecto). Host path ejemplo: Data_Bioagro
       - ${EXTERNAL_DATA_HOST_PATH:-/mnt/disco3tb/Data_Bioagro}:/data_bioagro:rw
     # --reload: aplica cambios en .py sin reconstruir imagen (volúmen ./backend:/app).
     command: bash -lc "apt-get update && apt-get install -y libexpat1 && pip install -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app"

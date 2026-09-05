@@ -34,7 +34,6 @@ data/
 # Large satellite imagery
 *.zip
 *.SAFE/
-0.geoagro/satellital/recorte_*/
 
 # Logs
 *.log
@@ -42,3 +41,14 @@ data/
 # Python virtual env
 venv/
 .venv/
+
+# P0 hygiene — local ops artifacts / legacy research (kept outside this repo)
+backups/
+*.sql
+*.dump
+*.bak
+cloudflared.deb
+*.deb
+.venv-semgrep/
+# Legacy GeoAgro archive lives under /home/deep/Documentos/0.geoagro — never re-add here
+0.geoagro/

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
-from app.api.v1.helpers import _tenant_storage
+from app.core.storage_paths import _tenant_storage
 from app.services.s1_sar_indices import S1_SAR_INDEX_KEYS, S1_SAR_STACKS_ROOT_NAME, _safe_relative_under
 from app.services.s2_vegetation_indices import _resample_to_match, normalize_index_minmax_per_scene
 

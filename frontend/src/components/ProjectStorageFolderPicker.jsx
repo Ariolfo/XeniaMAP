@@ -3,7 +3,7 @@ import api, { formatApiErrorDetail, setAuthToken } from "../api";
 
 /**
  * Selector de carpeta origen:
- * - Data_Bioagro (disco externo montado; sin copiar)
+ * - Disco externo (montado; sin copiar)
  * - almacenamiento del proyecto
  * - carpeta del computador (sube a local_import/…)
  */
@@ -97,7 +97,7 @@ export default function ProjectStorageFolderPicker({
         if (externalOnly) {
           setMode("external");
           if (!enabled) {
-            setError("Data_Bioagro no está montado. Revisa EXTERNAL_DATA_HOST_PATH en Docker.");
+            setError("Disco externo no está montado. Revisa EXTERNAL_DATA_HOST_PATH en Docker.");
             setData(null);
             return;
           }
@@ -116,7 +116,7 @@ export default function ProjectStorageFolderPicker({
         if (cancelled) return;
         setExternalEnabled(false);
         if (externalOnly) {
-          setError("No se pudo acceder a Data_Bioagro.");
+          setError("No se pudo acceder al disco externo.");
           setData(null);
           return;
         }
@@ -249,7 +249,7 @@ export default function ProjectStorageFolderPicker({
                       void loadExternal(isExt(initialPath) ? stripExt(initialPath) : "");
                     }}
                   >
-                    Data_Bioagro
+                    Disco externo
                   </button>
                 ) : null}
                 <button
@@ -280,7 +280,7 @@ export default function ProjectStorageFolderPicker({
               <p className="l2a-browse-cwd">
                 {mode === "external" ? (
                   <>
-                    Data_Bioagro: <code>{cwd || "(raíz)"}</code>
+                    Disco externo: <code>{cwd || "(raíz)"}</code>
                     <span className="l2a-downloads-hint"> — lectura directa, sin copiar</span>
                   </>
                 ) : (
@@ -363,7 +363,7 @@ export default function ProjectStorageFolderPicker({
             <>
               <p className="l2a-downloads-intro">
                 Alternativa: subir una carpeta del PC a <code>local_import/{kind}/…</code>. Para
-                datos grandes en el disco, usa <strong>Data_Bioagro</strong>.
+                datos grandes en el disco, usa el <strong>disco externo</strong>.
               </p>
               <input
                 ref={fileInputRef}

@@ -16,12 +16,19 @@ import {
   bboxFromBoundsWgs84,
   formatRecorteDisplayName,
 } from "./utils/geo";
+import {
+  ensureFireHotspotStarIcon,
+  ensureFireLiveHotspotIcons,
+  FIRE_HOTSPOT_STAR_IMAGE_ID,
+  resolveFireStarImageId,
+} from "./utils/fireMapIcons";
 import Sidebar from "./components/Sidebar";
 import MapView from "./components/MapView";
 import DomainMenu, { DOMAIN_OPTIONS } from "./components/DomainMenu";
 import IngresoPanel from "./components/IngresoPanel";
 import BrandHeader from "./components/BrandHeader";
 import FirePanel from "./components/fire/FirePanel";
+import FireLayersPanel from "./components/fire/FireLayersPanel";
 import AdvancedDashboard from "./components/dashboard/AdvancedDashboard";
 import SmartClusterModal from "./components/dashboard/SmartClusterModal";
 import SmartSoilModal from "./components/dashboard/SmartSoilModal";
@@ -85,7 +92,8 @@ export default function App() {
   const [visualIndexGalleryKick, setVisualIndexGalleryKick] = useState(0);
   const [visualIndexGalleryKickPs, setVisualIndexGalleryKickPs] = useState(0);
   const [sidebarTab, setSidebarTab] = useState("admin");
-  const [activeDomain, setActiveDomain] = useState("agro");
+  const [activeDomain, setActiveDomain] = useState("ingreso");
+  const [fireFocusOrderId, setFireFocusOrderId] = useState(null);
   const [recorteLayerId, setRecorteLayerId] = useState("");
   const [preproGalleryKick, setPreproGalleryKick] = useState(0);
   const [preproClusterVizKick, setPreproClusterVizKick] = useState(0);
@@ -235,14 +243,16 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    if (!token) {
-      setSidebarTab("dashboard");
-      return;
-    }
-    if (normalizedUserRole === "cliente") {
-      setSidebarTab("dashboard");
-    } else if (normalizedUserRole === "admin") {
-      setSidebarTab("admin");
+    if (!token) return;
+    // Corregir pestaña inválida por rol (p. ej. login dejaba "dashboard" en admin → panel vacío).
+    if (normalizedUserRole === "admin") {
+      setSidebarTab((tab) => (tab === "dashboard" ? "admin" : tab));
+    } else if (normalizedUserRole === "cliente") {
+      setSidebarTab((tab) =>
+        ["admin", "cargar", "s1", "prepro", "ps", "smart", "capas"].includes(tab)
+          ? "dashboard"
+          : tab
+      );
     }
   }, [token, normalizedUserRole]);
 
@@ -255,11 +265,18 @@ export default function App() {
       setProjectId("");
       setProjects([]);
       setTargetRasterId("");
+      setFireFocusOrderId(null);
+      setActiveDomain("ingreso");
+      setAuthStep("email");
       setMessage("Sesion expirada. Vuelve a iniciar sesion.");
     };
+    window.addEventListener("xeniamap:auth-refreshed", onRefreshed);
+    window.addEventListener("xeniamap:auth-expired", onExpired);
     window.addEventListener("bioagromap:auth-refreshed", onRefreshed);
     window.addEventListener("bioagromap:auth-expired", onExpired);
     return () => {
+      window.removeEventListener("xeniamap:auth-refreshed", onRefreshed);
+      window.removeEventListener("xeniamap:auth-expired", onExpired);
       window.removeEventListener("bioagromap:auth-refreshed", onRefreshed);
       window.removeEventListener("bioagromap:auth-expired", onExpired);
     };
@@ -589,27 +606,356 @@ export default function App() {
     clearAllMapLayers,
   } = useMapLayers(mapRef);
 
-  function paintLayerOnMap(lid, geojsonData) {
+  function toggleFireDnbrGroup(rootId, childIds = []) {
+    const root = mapLayersRef.current.find((l) => l.id === rootId);
+    const children = mapLayersRef.current.filter((l) => childIds.includes(l.id));
+    const anyOn = !!root?.visible || children.some((c) => c.visible);
+    const turnOn = !anyOn;
+    // Continuo dNBR queda off; las clases discretras son la visualización principal.
+    setLayerVisibility(rootId, false);
+    childIds.forEach((cid) => setLayerVisibility(cid, turnOn));
+  }
+
+  function toggleFireLayerVisibility(lid) {
+    const layer = mapLayersRef.current.find((l) => l.id === lid);
+    if (layer?.metadata?.fireDnbrGroupRoot) {
+      const kids = mapLayersRef.current
+        .filter((l) => l.metadata?.fireDnbrGroupChild)
+        .map((l) => l.id);
+      toggleFireDnbrGroup(lid, kids);
+      return;
+    }
+    toggleLayerVisibility(lid);
+  }
+
+  function paintLayerOnMap(lid, geojsonData, options = {}) {
     const map = mapRef.current;
     if (!map || !geojsonData) return;
+    const visible = options.visible !== false;
+    const symbol = options.symbol || null;
+    const fillColor = options.fillColor || "#2d6cdf";
+    const lineColor = options.lineColor || "#1a3f8c";
+    const fillOpacity = options.fillOpacity ?? 0.35;
+    const lineWidth = options.lineWidth ?? 2;
     const tryPaint = () => {
       if (map.getSource(lid)) return;
       map.addSource(lid, { type: "geojson", data: geojsonData });
+      if (symbol) {
+        ensureFireHotspotStarIcon(map);
+        ensureFireLiveHotspotIcons(map);
+        const iconId = resolveFireStarImageId(symbol);
+        const iconSize = options.iconSize ?? (symbol === "star" ? 0.9 : 0.7);
+        const iconOpacity = options.iconOpacity ?? 1;
+        map.addLayer({
+          id: lid,
+          type: "symbol",
+          source: lid,
+          layout: {
+            "icon-image": iconId || FIRE_HOTSPOT_STAR_IMAGE_ID,
+            "icon-size": iconSize,
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            visibility: visible ? "visible" : "none",
+          },
+          paint: {
+            "icon-opacity": iconOpacity,
+          },
+        });
+        return;
+      }
       map.addLayer({
         id: lid,
         type: "fill",
         source: lid,
-        paint: { "fill-color": "#2d6cdf", "fill-opacity": 0.35 },
+        paint: { "fill-color": fillColor, "fill-opacity": fillOpacity },
+        layout: { visibility: visible ? "visible" : "none" },
       });
       map.addLayer({
         id: lid + "_outline",
         type: "line",
         source: lid,
-        paint: { "line-color": "#1a3f8c", "line-width": 2 },
+        paint: { "line-color": lineColor, "line-width": lineWidth, "line-opacity": 1 },
+        layout: { visibility: visible ? "visible" : "none" },
       });
     };
     if (map.isStyleLoaded()) tryPaint();
-    else map.once("styledata", tryPaint);
+    else map.once("style.load", tryPaint);
+  }
+
+  function clearFireMap() {
+    clearAllMapLayers();
+    setProjectId(null);
+    setFireFocusOrderId(null);
+    setMessage("Fire: seleccione un municipio o proyecto.");
+  }
+
+  async function loadFireOrderOnMap(orderDetail, options = {}) {
+    if (!orderDetail || !token) return;
+    const fit = options.fit !== false;
+    clearAllMapLayers();
+    setPendingDeletes([]);
+    setDirty(false);
+    setFireFocusOrderId(orderDetail.id ?? null);
+    if (orderDetail.project_id) setProjectId(orderDetail.project_id);
+    setMessage(`Fire · ${orderDetail.request_name}: cargando capas…`);
+    setLoading(true);
+    let firstBbox = null;
+    try {
+      setAuthToken(token);
+      if (orderDetail.geometry) {
+        const lid = addMapLayer("Polígono municipio", "vector", orderDetail.geometry, null, {
+          metadata: {
+            fireLayer: true,
+            fireRole: "aoi",
+            fillOpacity: 0,
+            lineColor: "#dc2626",
+            lineWidth: 3,
+          },
+          displayName: `Polígono · ${orderDetail.request_name}`,
+        });
+        paintLayerOnMap(lid, orderDetail.geometry, {
+          fillColor: "#dc2626",
+          lineColor: "#dc2626",
+          fillOpacity: 0,
+          lineWidth: 3,
+        });
+        firstBbox = bboxFromGeojson(orderDetail.geometry);
+      }
+
+      const catalogRes = await api.get(`/fire-orders/${orderDetail.id}/results`);
+      const layers = Array.isArray(catalogRes.data?.layers) ? catalogRes.data.layers : [];
+      for (const item of layers) {
+        if (!item.available) continue;
+        if (item.kind === "vector") {
+          try {
+            const gjRes = await api.get(`/fire-orders/${orderDetail.id}/results/geojson`, {
+              params: { name: item.filename },
+            });
+            const gj = gjRes.data;
+            const defaultOn = !!item.default_on;
+            const isHotspot =
+              item.map_symbol === "star" ||
+              String(item.filename || "").includes("FIRMS_VIIRS_hotspots") ||
+              String(item.filename || "").toLowerCase().includes("hotspot");
+            const colors = isHotspot
+              ? { symbol: "star" }
+              : item.filename.includes("recommended")
+                ? { fillColor: "#ff7a00", lineColor: "#ff4500", fillOpacity: 0.9, lineWidth: 2.5 }
+                : item.filename.includes("validated")
+                  ? { fillColor: "#ea580c", lineColor: "#9a3412", fillOpacity: 0.35 }
+                  : { fillColor: "#eab308", lineColor: "#a16207", fillOpacity: 0.3 };
+            const lid = addMapLayer(item.label, "vector", gj, null, {
+              append: true,
+              visible: defaultOn,
+              metadata: {
+                fireLayer: true,
+                fireArtifact: item.filename,
+                ...(isHotspot
+                  ? {
+                      fireSymbol: "star",
+                      fireRole: "hotspot",
+                      fireClassColor: "#ff0000",
+                      fireIconSize: 0.9,
+                      fireIconOpacity: 1,
+                    }
+                  : {}),
+                ...(item.filename.includes("recommended")
+                  ? {
+                      fireFillColor: "#ff7a00",
+                      fireLineColor: "#ff4500",
+                      fireFillOpacity: 0.9,
+                      fireLineWidth: 2.5,
+                    }
+                  : {}),
+              },
+              displayName: item.label,
+            });
+            paintLayerOnMap(lid, gj, { ...colors, visible: defaultOn });
+            // Hotspots: forzar visible en mapa (puntos no se ven bajo rasters Fire).
+            if (isHotspot && defaultOn) {
+              const map = mapRef.current;
+              if (map?.getLayer(lid)) {
+                map.setLayoutProperty(lid, "visibility", "visible");
+              }
+            }
+            const bb = bboxFromGeojson(gj);
+            if (bb && !firstBbox) firstBbox = bb;
+          } catch (_) {
+            /* skip missing/unreadable */
+          }
+        } else if (item.kind === "raster") {
+          try {
+            const prev = await api.get(`/fire-orders/${orderDetail.id}/results/preview`, {
+              params: { name: item.filename },
+            });
+            const bounds = prev.data?.bounds;
+            const pngBase64 = prev.data?.png_base64;
+            if (!bounds || !pngBase64) continue;
+            const rbbox = [
+              [bounds[0], bounds[1]],
+              [bounds[2], bounds[3]],
+            ];
+            const defaultOn = !!item.default_on;
+            const isDnbrGroup = !!item.severity_class_group;
+            addMapLayer(item.label, "raster", null, null, {
+              append: true,
+              visible: defaultOn,
+              bbox: rbbox,
+              metadata: {
+                fireLayer: true,
+                fireArtifact: item.filename,
+                firePreview: true,
+                fireDnbrGroupRoot: isDnbrGroup,
+                bounds,
+                pngBase64,
+              },
+              displayName: item.label,
+            });
+            if (!firstBbox) firstBbox = rbbox;
+
+            // Clases 1–7 (paleta discreta) anidadas bajo dNBR.
+            if (isDnbrGroup && Array.isArray(item.severity_classes)) {
+              for (const cls of item.severity_classes) {
+                if (!cls?.available || cls.class_id == null) continue;
+                try {
+                  const cprev = await api.get(
+                    `/fire-orders/${orderDetail.id}/results/preview`,
+                    {
+                      params: {
+                        name: cls.source_filename || "Fire_burn_severity.tif",
+                        severity_class: cls.class_id,
+                      },
+                    }
+                  );
+                  const cbounds = cprev.data?.bounds;
+                  const cpng = cprev.data?.png_base64;
+                  if (!cbounds || !cpng) continue;
+                  const classOn = cls.default_on !== false;
+                  addMapLayer(
+                    `Clase ${cls.class_id} · ${cls.label}`,
+                    "raster",
+                    null,
+                    null,
+                    {
+                      append: true,
+                      visible: classOn,
+                      bbox: [
+                        [cbounds[0], cbounds[1]],
+                        [cbounds[2], cbounds[3]],
+                      ],
+                      metadata: {
+                        fireLayer: true,
+                        fireArtifact: cls.source_filename || "Fire_burn_severity.tif",
+                        firePreview: true,
+                        fireDnbrGroupChild: true,
+                        fireSeverityClass: cls.class_id,
+                        fireClassColor: cls.color || null,
+                        fireParentArtifact: item.filename,
+                        bounds: cbounds,
+                        pngBase64: cpng,
+                      },
+                      displayName: `${cls.class_id}. ${cls.label}`,
+                    }
+                  );
+                } catch (_) {
+                  /* skip class */
+                }
+              }
+            }
+          } catch (_) {
+            /* skip */
+          }
+        }
+      }
+
+      // Hotspots FIRMS en vivo (AOI + API), independientes de dNBR.
+      try {
+        const liveRes = await api.get(`/fire-orders/${orderDetail.id}/firms-live`, {
+          params: { hours: 48 },
+        });
+        const liveLayers = liveRes.data?.layers || {};
+        const liveSpecs = [
+          {
+            key: "hotspots_24h",
+            label: "Hotspots FIRMS 24 h",
+            symbol: "star-24h",
+            color: "#2563eb",
+            fc: liveLayers.hotspots_24h,
+          },
+          {
+            key: "hotspots_48h",
+            label: "Hotspots FIRMS 48 h",
+            symbol: "star-48h",
+            color: "#7c3aed",
+            fc: liveLayers.hotspots_48h,
+          },
+        ];
+        for (const spec of liveSpecs) {
+          const gj = spec.fc;
+          if (!gj || !Array.isArray(gj.features)) continue;
+          // Mostrar capa aunque esté vacía para que aparezca en Capas Fire.
+          const lid = addMapLayer(spec.label, "vector", gj, null, {
+            append: true,
+            visible: true,
+            metadata: {
+              fireLayer: true,
+              fireLiveFirms: true,
+              fireArtifact: spec.key,
+              fireSymbol: spec.symbol,
+              fireRole: spec.key,
+              fireClassColor: spec.color,
+            },
+            displayName: spec.label,
+          });
+          paintLayerOnMap(lid, gj, { symbol: spec.symbol, visible: true });
+          const bb = bboxFromGeojson(gj);
+          if (bb && !firstBbox) firstBbox = bb;
+        }
+      } catch (_) {
+        /* FIRMS key / red ausente: no bloquear el resto de capas */
+      }
+
+      // Imagen satelital como última entrada en Capas Fire (toggle mapa base).
+      addMapLayer("Imagen satelital", "raster", null, null, {
+        append: true,
+        visible: true,
+        metadata: {
+          fireLayer: true,
+          fireRole: "basemap-satellite",
+          fireBasemapSatellite: true,
+          fireClassColor: "#38bdf8",
+        },
+        displayName: "Imagen satelital",
+      });
+
+      // Subir estrellas FIRMS por encima de rasters dNBR/RGB.
+      const map = mapRef.current;
+      if (map?.isStyleLoaded?.()) {
+        for (const l of mapLayersRef.current) {
+          if (l.metadata?.fireSymbol && map.getLayer(l.id)) {
+            try {
+              map.moveLayer(l.id);
+            } catch (_) {
+              /* ignore */
+            }
+          }
+        }
+      }
+
+      if (fit && firstBbox && mapRef.current) {
+        mapRef.current.fitBounds(firstBbox, { padding: 60, maxZoom: 14 });
+      }
+      const n = mapLayersRef.current.length;
+      setMessage(
+        `Fire · ${orderDetail.request_name}: ${n} capa(s) en el mapa. Use el panel Capas Fire.`
+      );
+    } catch (error) {
+      setMessage(
+        `Fire: error al cargar capas — ${error?.response?.data?.detail || error.message || "desconocido"}`
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   function zoomToLayer(lid) {
@@ -849,8 +1195,9 @@ export default function App() {
         password: effectivePassword,
       });
       const accessToken = res.data.access_token;
+      const role = normalizeUserRole(res.data?.role);
       setToken(accessToken);
-      setUserRole(normalizeUserRole(res.data?.role));
+      setUserRole(role);
       persistAuthTokens(accessToken, res.data.refresh_token);
       persistViewerEmail(effectiveEmail);
       const userProjects = await fetchProjects(accessToken, "agro");
@@ -858,10 +1205,11 @@ export default function App() {
       const fireCount = (fireProjects || []).length;
       setMessage(
         fireCount
-          ? `Sesion iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}. Use el menú de módulos.`
-          : `Sesion iniciada. ${userProjects.length} proyecto(s) Agro.`
+          ? `Sesión iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}.`
+          : `Sesión iniciada. ${userProjects.length} proyecto(s) Agro.`
       );
-      setSidebarTab("dashboard");
+      // Admin → Gestión; cliente → Proyectos (no "dashboard" en admin: deja el panel vacío).
+      setSidebarTab(role === "admin" ? "admin" : "dashboard");
       setActiveDomain("agro");
       setAuthStep("email");
       setOtpDebug(null);
@@ -937,8 +1285,9 @@ export default function App() {
     try {
       const res = await api.post("/auth/verify-otp", { email: pendingRegEmail, code: c });
       const accessToken = res.data.access_token;
+      const role = normalizeUserRole(res.data?.role);
       setToken(accessToken);
-      setUserRole(normalizeUserRole(res.data?.role));
+      setUserRole(role);
       persistAuthTokens(accessToken, res.data.refresh_token);
       persistViewerEmail(pendingRegEmail);
       const userProjects = await fetchProjects(accessToken, "agro");
@@ -952,11 +1301,11 @@ export default function App() {
       } else {
         setMessage(
           fireCount
-            ? `Sesión iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}. Use el menú de módulos.`
+            ? `Sesión iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}.`
             : `Código verificado. Sesión iniciada. ${userProjects.length} proyecto(s) Agro.`
         );
       }
-      setSidebarTab("dashboard");
+      setSidebarTab(role === "admin" ? "admin" : "dashboard");
       setActiveDomain("agro");
       setAuthStep("email");
       setOtpDebug(null);
@@ -978,6 +1327,7 @@ export default function App() {
     setProjectId("");
     setProjects([]);
     setTargetRasterId("");
+    setFireFocusOrderId(null);
     setUserMgmtOpen(false);
     setStudyRequestOpen(false);
     setStudyOrdersOpen(false);
@@ -985,6 +1335,7 @@ export default function App() {
     setAuthStep("email");
     setPendingRegEmail("");
     setOtpDebug(null);
+    setActiveDomain("ingreso");
     clearAllMapLayers();
     setMessage("Sesion cerrada.");
     navigate("/");
@@ -1149,7 +1500,7 @@ export default function App() {
       (downloadSource === "sentinel-1" || downloadSource === "sentinel-2") &&
       !(downloadSubpath && String(downloadSubpath).startsWith("ext:"))
     ) {
-      setMessage("Error: elige la carpeta de destino en Data_Bioagro.");
+      setMessage("Error: elige la carpeta de destino en el disco externo.");
       return;
     }
     setLoading(true);
@@ -1598,6 +1949,10 @@ export default function App() {
   function selectDomain(domainId) {
     const domain = DOMAIN_OPTIONS.find((d) => d.id === domainId);
     if (!domain) return;
+    if (domainId !== activeDomain && (activeDomain === "fire" || domainId === "fire")) {
+      clearAllMapLayers();
+      setFireFocusOrderId(null);
+    }
     setActiveDomain(domainId);
     if (!domain.ready) {
       setMessage(
@@ -1658,7 +2013,7 @@ export default function App() {
   }
 
   return (
-    <div className={`layout layout-domain-${activeDomain}${token && isAdmin && activeDomain === "agro" ? " layout--agro-admin" : ""}`}>
+    <div className={`layout layout-domain-${activeDomain}${token && isAdmin && activeDomain === "agro" ? " layout--agro-admin" : ""}${activeDomain === "fire" && mapLayers.some((l) => l.metadata?.fireLayer) ? " layout--fire-layers" : ""}`}>
       <DomainMenu
         activeDomain={activeDomain}
         onSelectDomain={selectDomain}
@@ -1845,9 +2200,10 @@ export default function App() {
           isAdmin={isAdmin}
           email={email}
           onStatusMessage={setMessage}
-          onSelectProject={(id) => selectProject(id, token)}
+          onFireOrderFocus={loadFireOrderOnMap}
+          onClearFireMap={clearFireMap}
           onProjectsRefresh={() => {
-            if (token) fetchProjects(token);
+            if (token) fetchProjects(token, "fire");
           }}
         />
       ) : (
@@ -1877,6 +2233,22 @@ export default function App() {
         setBaseStyle={setBaseStyle}
         studyDraw={studyDraw}
       />
+      {activeDomain === "fire" && mapLayers.some((l) => l.metadata?.fireLayer) ? (
+        <FireLayersPanel
+          orderTitle={
+            mapLayers.find((l) => l.metadata?.fireRole === "aoi")?.displayName?.replace(
+              /^Polígono ·\s*/,
+              ""
+            ) || ""
+          }
+          orderId={fireFocusOrderId}
+          token={token}
+          layers={mapLayers.filter((l) => l.metadata?.fireLayer)}
+          onToggle={toggleFireLayerVisibility}
+          onToggleDnbrGroup={toggleFireDnbrGroup}
+          loading={loading && mapLayers.filter((l) => l.metadata?.fireLayer).length === 0}
+        />
+      ) : null}
       <AdvancedDashboard
         open={dashboardOpen && !!token && !!projectId && (isAdmin || isCliente)}
         onClose={() => setDashboardOpen(false)}

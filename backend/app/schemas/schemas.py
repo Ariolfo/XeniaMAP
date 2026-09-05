@@ -183,7 +183,7 @@ class DownloadRequest(BaseModel):
     download_subpath: str | None = Field(
         default=None,
         description=(
-            "Destino en Data_Bioagro: ``ext:`` o ``ext:carpeta/…``. "
+            "Destino en disco externo: ``ext:`` o ``ext:carpeta/…``. "
             "Obligatorio para Sentinel-2. Se crea ``Sentinel2/`` dentro si no existe."
         ),
     )
@@ -227,7 +227,7 @@ class S1GrdRecorteRequest(BaseModel):
         default=None,
         description=(
             "Origen de productos S1: ruta relativa bajo el proyecto, o ``ext:`` / ``ext:carpeta/…`` "
-            "bajo EXTERNAL_DATA_ROOT (Data_Bioagro). Si se omite, ``downloads/<slug>/Sentinel1/``."
+            "bajo EXTERNAL_DATA_ROOT (disco externo). Si se omite, ``downloads/<slug>/Sentinel1/``."
         ),
     )
 
@@ -239,7 +239,7 @@ class PsPlanetZipExtractRequest(BaseModel):
     source_subpath: str | None = Field(
         default=None,
         description=(
-            "Origen de ZIP Planet: ruta bajo el proyecto, o ``ext:…`` en Data_Bioagro. "
+            "Origen de ZIP Planet: ruta bajo el proyecto, o ``ext:…`` en disco externo / EXTERNAL_DATA_ROOT. "
             "Si se omite, ``rasterPS/``. La salida del extract queda en ``rasterPS/``."
         ),
     )
@@ -258,7 +258,7 @@ class S2L2aRecorteRequest(BaseModel):
     source_subpath: str | None = Field(
         default=None,
         description=(
-            "Origen L2A: ruta bajo el proyecto, o ``ext:…`` en Data_Bioagro. "
+            "Origen L2A: ruta bajo el proyecto, o ``ext:…`` en disco externo / EXTERNAL_DATA_ROOT. "
             "Si se omite, ``downloads/<slug>/Sentinel2/``."
         ),
     )

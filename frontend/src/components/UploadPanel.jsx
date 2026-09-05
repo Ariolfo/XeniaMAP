@@ -75,7 +75,7 @@ export default function UploadPanel({
   }
 
   const destLabel = downloadDestSubpath
-    ? String(downloadDestSubpath).replace(/^ext:/, "") || "(raíz Data_Bioagro)"
+    ? String(downloadDestSubpath).replace(/^ext:/, "") || "(raíz disco externo)"
     : "";
   const sensorFolderHint = isSentinel1 ? "Sentinel1" : isSentinel2 ? "Sentinel2" : "";
 
@@ -249,7 +249,7 @@ export default function UploadPanel({
 
         {needsExternalDest && (
           <div className="hint-msg" style={{ marginTop: "0.75rem" }}>
-            <strong>Carpeta destino (Data_Bioagro):</strong> elige el lote/carpeta; se usará{" "}
+            <strong>Carpeta destino (disco externo):</strong> elige el lote/carpeta; se usará{" "}
             <code>{sensorFolderHint}/</code> dentro (se crea si no existe).
             <div style={{ marginTop: "0.4rem", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
               <button
@@ -258,7 +258,7 @@ export default function UploadPanel({
                 disabled={loading}
                 onClick={() => setDestPickerOpen(true)}
               >
-                Elegir carpeta en Data_Bioagro
+                Elegir carpeta en disco externo
               </button>
               {hasDest ? (
                 <span className="status-msg">
@@ -347,7 +347,7 @@ export default function UploadPanel({
         token={token}
         externalOnly
         allowCreateFolder
-        title="Carpeta destino en Data_Bioagro"
+        title="Carpeta destino en disco externo"
         initialPath={downloadDestSubpath || "ext:"}
         confirmLabel="Usar esta carpeta para descargar"
         onCancel={() => setDestPickerOpen(false)}

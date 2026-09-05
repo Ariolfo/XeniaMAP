@@ -342,7 +342,7 @@ def start_fire_download(
     order.download_manifest = None
     db.commit()
 
-    from app.tasks.jobs import fire_download_s2
+    from app.tasks.fire_jobs import fire_download_s2
 
     async_result = fire_download_s2.delay(
         order.id,
@@ -420,7 +420,7 @@ def start_fire_process_dnbr(
     order.process_manifest = None
     db.commit()
 
-    from app.tasks.jobs import fire_process_dnbr
+    from app.tasks.fire_jobs import fire_process_dnbr
 
     async_result = fire_process_dnbr.delay(order.id, settings.database_url)
     order.process_task_id = async_result.id
@@ -461,7 +461,7 @@ def start_fire_validate_firms(
     order.firms_manifest = None
     db.commit()
 
-    from app.tasks.jobs import fire_validate_firms
+    from app.tasks.fire_jobs import fire_validate_firms
 
     async_result = fire_validate_firms.delay(
         order.id,
@@ -521,4 +521,372 @@ def fire_pipeline_status(
         "download_task": _task_meta(order.download_task_id),
         "process_task": _task_meta(getattr(order, "process_task_id", None)),
         "firms_task": _task_meta(getattr(order, "firms_task_id", None)),
+    }
+
+
+# Capas de salida publicables en el mapa (orden de visualización).
+FIRE_RESULT_CATALOG = [
+    {
+        "filename": "Fire_dNBR.tif",
+        "label": "dNBR",
+        "kind": "raster",
+        "default_on": False,
+        "preview_meta": {"preview_rgb_bands": [1, 1, 1], "index_preview_cmap": "RdYlBu_r"},
+        "index_palette": True,
+        # Clases 1–7 (desde Fire_burn_severity.tif) se anidan bajo dNBR en el panel.
+        "severity_class_group": True,
+    },
+    {
+        "filename": "Fire_burn_severity.tif",
+        "label": "Severidad",
+        "kind": "raster",
+        "default_on": False,
+        "preview_meta": {"preview_rgb_bands": [1, 1, 1]},
+        "index_palette": False,
+        "discrete_severity": True,
+        # No listar como capa top-level: se expone vía clases bajo dNBR.
+        "ui_nested_only": True,
+    },
+    {
+        "filename": "Fire_RGB_PRE_10m_COG.tif",
+        "label": "RGB PRE",
+        "kind": "raster",
+        "default_on": False,
+        "preview_meta": {"preview_rgb_bands": [1, 2, 3]},
+        "index_palette": False,
+        "display_ready_uint8": True,
+    },
+    {
+        "filename": "Fire_RGB_POST_10m_COG.tif",
+        "label": "RGB POST",
+        "kind": "raster",
+        "default_on": False,
+        "preview_meta": {"preview_rgb_bands": [1, 2, 3]},
+        "index_palette": False,
+        "display_ready_uint8": True,
+    },
+    {
+        "filename": "Fire_burn_candidates.gpkg",
+        "label": "Candidatos quemados",
+        "kind": "vector",
+        "default_on": False,
+        "stats": True,
+    },
+    {
+        "filename": "Fire_burn_candidates_validated.gpkg",
+        "label": "Candidatos validados",
+        "kind": "vector",
+        "default_on": False,
+        "stats": True,
+    },
+    {
+        "filename": "Fire_burned_area_recommended.gpkg",
+        "label": "Área quemada recomendada",
+        "kind": "vector",
+        "default_on": True,
+        "stats": True,
+    },
+    {
+        "filename": "Fire_FIRMS_VIIRS_hotspots.gpkg",
+        "label": "Hotspots FIRMS VIIRS",
+        "kind": "vector",
+        "default_on": True,
+        "stats": True,
+        "stats_kind": "points",
+        "map_symbol": "star",
+    },
+]
+
+
+def _require_fire_order_access(order_id: int, user: User, db: Session) -> FireOrder:
+    order = db.query(FireOrder).filter(FireOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Solicitud Fire no encontrada")
+    role = str(user.role or "").lower()
+    if role == "admin":
+        if order.tenant_id != user.tenant_id:
+            raise HTTPException(status_code=404, detail="Solicitud Fire no encontrada")
+    else:
+        email = str(user.email or "").strip().lower()
+        order_email = str(order.applicant_email or "").strip().lower()
+        if order_email != email and order.created_by_user_id != user.id:
+            raise HTTPException(status_code=404, detail="Solicitud Fire no encontrada")
+    return order
+
+
+def _safe_result_path(order_id: int, filename: str) -> Path:
+    name = Path(str(filename or "")).name
+    allowed = {c["filename"] for c in FIRE_RESULT_CATALOG}
+    if name not in allowed:
+        raise HTTPException(status_code=404, detail="Capa Fire no permitida")
+    root = Path(settings.storage_path) / "fire" / f"order_{order_id}" / "results"
+    path = (root / name).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Ruta inválida") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Archivo de resultado no encontrado")
+    return path
+
+
+@router.get("/{order_id}/results")
+def list_fire_results(
+    order_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lista capas de salida disponibles en results/ para el mapa."""
+    order = _require_fire_order_access(order_id, user, db)
+    root = Path(settings.storage_path) / "fire" / f"order_{order_id}" / "results"
+    layers = []
+    from app.services.raster_geo import BURN_SEVERITY_CLASS_LABELS, BURN_SEVERITY_CLASS_RGB
+
+    for item in FIRE_RESULT_CATALOG:
+        if item.get("ui_nested_only"):
+            continue
+        path = root / item["filename"]
+        entry = {
+            "filename": item["filename"],
+            "label": item["label"],
+            "kind": item["kind"],
+            "default_on": bool(item.get("default_on")),
+            "available": path.is_file(),
+            "size_bytes": path.stat().st_size if path.is_file() else None,
+            "severity_class_group": bool(item.get("severity_class_group")),
+            "map_symbol": item.get("map_symbol"),
+        }
+        if item.get("severity_class_group"):
+            sev_path = root / "Fire_burn_severity.tif"
+            entry["severity_classes"] = [
+                {
+                    "class_id": cid,
+                    "label": BURN_SEVERITY_CLASS_LABELS[cid],
+                    "color": "#{:02x}{:02x}{:02x}".format(*BURN_SEVERITY_CLASS_RGB[cid]),
+                    # Regeneración / no quemado off por defecto; quemadas on.
+                    "default_on": cid >= 4,
+                    "available": sev_path.is_file(),
+                    "source_filename": "Fire_burn_severity.tif",
+                }
+                for cid in range(1, 8)
+            ]
+        layers.append(entry)
+    return {
+        "order_id": order.id,
+        "request_name": order.request_name,
+        "results_root": str(root) if root.exists() else None,
+        "layers": layers,
+    }
+
+
+@router.get("/{order_id}/results/stats")
+def fire_result_stats(
+    order_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Áreas (ha / km²) de capas vectoriales de salida Fire."""
+    order = _require_fire_order_access(order_id, user, db)
+    root = Path(settings.storage_path) / "fire" / f"order_{order_id}" / "results"
+    rows = []
+    for item in FIRE_RESULT_CATALOG:
+        if not item.get("stats"):
+            continue
+        path = root / item["filename"]
+        entry = {
+            "filename": item["filename"],
+            "label": item["label"],
+            "available": path.is_file(),
+            "feature_count": None,
+            "area_ha": None,
+            "area_km2": None,
+        }
+        if path.is_file():
+            try:
+                gdf = gpd.read_file(path)
+                entry["feature_count"] = int(len(gdf))
+                is_points = bool(item.get("stats_kind") == "points") or (
+                    len(gdf) > 0
+                    and gdf.geometry.geom_type.isin(["Point", "MultiPoint"]).all()
+                )
+                if is_points:
+                    entry["area_ha"] = None
+                    entry["area_km2"] = None
+                elif "area_ha" in gdf.columns:
+                    ha = float(gdf["area_ha"].fillna(0).sum())
+                    entry["area_ha"] = round(ha, 2)
+                    entry["area_km2"] = round(ha / 100.0, 4)
+                else:
+                    projected = gdf
+                    if projected.crs is None:
+                        projected = projected.set_crs(4326)
+                    # Área geodésica aproximada vía EPSG:9377 (MAGNA-SIRGAS / Origen-Nacional) si aplica;
+                    # fallback Web Mercator solo como respaldo.
+                    try:
+                        projected = projected.to_crs(9377)
+                    except Exception:
+                        projected = projected.to_crs(3857)
+                    ha = float(projected.geometry.area.sum()) / 10000.0
+                    entry["area_ha"] = round(ha, 2)
+                    entry["area_km2"] = round(ha / 100.0, 4)
+            except Exception as exc:
+                logger.warning("fire stats %s: %s", path, exc)
+                entry["available"] = False
+        rows.append(entry)
+    return {
+        "order_id": order.id,
+        "request_name": order.request_name,
+        "layers": rows,
+    }
+
+
+@router.get("/{order_id}/firms-live")
+def fire_firms_live(
+    order_id: int,
+    hours: int = 48,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Hotspots FIRMS VIIRS en vivo para el AOI de la solicitud (sin dNBR).
+
+    ``hours``: 24 o 48 (respecto a la hora UTC del servidor).
+    Devuelve dos FeatureCollections mutuamente excluyentes:
+      - hotspots_24h: últimos 24 h
+      - hotspots_48h: entre 24 h y 48 h (vacío si hours=24)
+    """
+    order = _require_fire_order_access(order_id, user, db)
+    if hours not in (24, 48):
+        raise HTTPException(status_code=422, detail="hours debe ser 24 o 48")
+
+    map_key = (settings.firms_map_key or "").strip()
+    if not map_key:
+        import os
+
+        map_key = (os.environ.get("FIRMS_MAP_KEY") or "").strip()
+    if not map_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "FIRMS_MAP_KEY no configurada. "
+                "Solicite una clave en https://firms.modaps.eosdis.nasa.gov/api/map_key/"
+            ),
+        )
+
+    if not order.geometry_geojson:
+        raise HTTPException(status_code=400, detail="La solicitud no tiene geometría AOI")
+
+    from app.modules.fire.firms_live import fetch_firms_live
+
+    try:
+        payload = fetch_firms_live(
+            geometry_geojson=order.geometry_geojson,
+            map_key=map_key,
+            hours=hours,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("firms-live order %s", order_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Error consultando FIRMS: {exc}",
+        ) from exc
+
+    return {
+        "order_id": order.id,
+        "request_name": order.request_name,
+        **payload,
+    }
+
+
+@router.get("/{order_id}/results/geojson")
+def fire_result_geojson(
+    order_id: int,
+    name: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """GeoJSON de un GPKG de resultados Fire."""
+    _require_fire_order_access(order_id, user, db)
+    path = _safe_result_path(order_id, name)
+    if path.suffix.lower() != ".gpkg":
+        raise HTTPException(status_code=422, detail="Solo GPKG como GeoJSON")
+    try:
+        gdf = gpd.read_file(path)
+        if gdf.crs is not None:
+            gdf = gdf.to_crs(4326)
+        return json.loads(gdf.to_json())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("fire result geojson %s", path)
+        raise HTTPException(status_code=500, detail=f"No se pudo leer GPKG: {exc}") from exc
+
+
+@router.get("/{order_id}/results/preview")
+def fire_result_preview(
+    order_id: int,
+    name: str,
+    severity_class: int | None = None,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PNG + bounds WGS84 para superponer raster Fire en MapLibre."""
+    import base64
+
+    from app.services.raster_geo import (
+        bounds_wgs84_from_path,
+        render_burn_severity_discrete_png,
+        render_display_ready_rgb_preview_png,
+        render_raster_preview_png,
+    )
+
+    _require_fire_order_access(order_id, user, db)
+    path = _safe_result_path(order_id, name)
+    if path.suffix.lower() not in {".tif", ".tiff"}:
+        raise HTTPException(status_code=422, detail="Solo GeoTIFF como preview")
+    catalog = next((c for c in FIRE_RESULT_CATALOG if c["filename"] == path.name), None)
+    meta = dict(catalog.get("preview_meta") or {}) if catalog else {}
+    index_palette = bool(catalog.get("index_palette")) if catalog else False
+    display_ready = bool(catalog.get("display_ready_uint8")) if catalog else False
+    discrete_sev = bool(catalog.get("discrete_severity")) if catalog else False
+    if severity_class is not None and (severity_class < 1 or severity_class > 7):
+        raise HTTPException(status_code=422, detail="severity_class debe estar entre 1 y 7")
+    try:
+        bounds = bounds_wgs84_from_path(path)
+        if discrete_sev or severity_class is not None:
+            if path.name != "Fire_burn_severity.tif":
+                raise HTTPException(
+                    status_code=422,
+                    detail="severity_class solo aplica a Fire_burn_severity.tif",
+                )
+            png = render_burn_severity_discrete_png(
+                path, max_dim=1536, only_class=severity_class
+            )
+        elif display_ready:
+            png = render_display_ready_rgb_preview_png(path, max_dim=1536, nodata=0)
+        else:
+            png = render_raster_preview_png(
+                path,
+                max_dim=1536,
+                layer_metadata=meta,
+                index_palette_request=index_palette,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("fire result preview %s", path)
+        raise HTTPException(status_code=500, detail=f"No se pudo generar preview: {exc}") from exc
+    if not bounds:
+        raise HTTPException(status_code=422, detail="Raster sin bounds WGS84")
+    w, s, e, n = [float(x) for x in bounds]
+    return {
+        "filename": path.name,
+        "bounds": [w, s, e, n],
+        "severity_class": severity_class,
+        "content_type": "image/png",
+        "png_base64": base64.b64encode(png).decode("ascii"),
     }

@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     ai_service_url: str = "http://localhost:8001"
     storage_path: str = Field(default_factory=_default_storage_path)
     # Disco local de datos grandes (recorte S1/S2/PS). En Docker: montar host → /data_bioagro.
-    # Vacío = deshabilitado. Ejemplo host: /mnt/disco3tb/Data_Bioagro
+    # Vacío = deshabilitado. Ejemplo host (nombre de carpeta en el host): /mnt/disco3tb/Data_Bioagro
     external_data_root: str = Field(
         default="",
         description="Raíz de datos externos locales (solo lectura lógica). Subpaths vía prefijo ext:.",

@@ -20,7 +20,7 @@ export default function useMapLayers(mapRef) {
       id: lid,
       name,
       kind,
-      visible: true,
+      visible: options.visible !== false,
       geojsonData,
       bbox,
       serverId: serverId || null,
@@ -64,8 +64,13 @@ export default function useMapLayers(mapRef) {
         if (l.id !== lid) return l;
         const vis = !l.visible;
         const map = mapRef.current;
-        if (map && map.getLayer(lid)) {
-          map.setLayoutProperty(lid, "visibility", vis ? "visible" : "none");
+        if (map) {
+          if (map.getLayer(lid)) {
+            map.setLayoutProperty(lid, "visibility", vis ? "visible" : "none");
+          }
+          if (map.getLayer(`${lid}_outline`)) {
+            map.setLayoutProperty(`${lid}_outline`, "visibility", vis ? "visible" : "none");
+          }
         }
         return { ...l, visible: vis };
       });
@@ -104,6 +109,19 @@ export default function useMapLayers(mapRef) {
         if (map.getSource(l.id)) map.removeSource(l.id);
       }
     });
+    if (map) {
+      try {
+        const satSrc = "_fire_basemap_satellite_src";
+        for (const l of [...(map.getStyle()?.layers || [])]) {
+          if (l.source === satSrc) {
+            try {
+              map.removeLayer(l.id);
+            } catch (_) {}
+          }
+        }
+        if (map.getSource(satSrc)) map.removeSource(satSrc);
+      } catch (_) {}
+    }
     setMapLayers([]);
     mapLayersRef.current = [];
     layerIdCounter.current = 1;

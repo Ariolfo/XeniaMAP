@@ -1,6 +1,6 @@
 /**
  * Branding temporal por cliente.
- * Para caugusto.vargas@gmail.com: sin logos BioAgro, solo «Geovisor Agricola».
+ * Para caugusto.vargas@gmail.com: sin logos XeniaMAP, solo «Geovisor Agricola».
  */
 
 const SK_EMAIL = "xeniamap_email";

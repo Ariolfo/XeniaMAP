@@ -30,8 +30,15 @@ function resolveApiBase() {
 
 export const API_URL = resolveApiBase();
 
-const SK_ACCESS = "bioagromap_access";
-const SK_REFRESH = "bioagromap_refresh";
+const SK_ACCESS = "xeniamap_access";
+const SK_REFRESH = "xeniamap_refresh";
+const SK_ACCESS_LEGACY = "bioagromap_access";
+const SK_REFRESH_LEGACY = "bioagromap_refresh";
+
+const EVT_AUTH_REFRESHED = "xeniamap:auth-refreshed";
+const EVT_AUTH_EXPIRED = "xeniamap:auth-expired";
+const EVT_AUTH_REFRESHED_LEGACY = "bioagromap:auth-refreshed";
+const EVT_AUTH_EXPIRED_LEGACY = "bioagromap:auth-expired";
 
 const api = axios.create({ baseURL: API_URL });
 
@@ -39,6 +46,18 @@ const api = axios.create({ baseURL: API_URL });
 const rawClient = axios.create({ baseURL: API_URL });
 
 let refreshInFlight = null;
+
+function readSessionKey(key, legacyKey) {
+  let v = sessionStorage.getItem(key);
+  if (v) return v;
+  const legacy = sessionStorage.getItem(legacyKey);
+  if (legacy) {
+    sessionStorage.setItem(key, legacy);
+    sessionStorage.removeItem(legacyKey);
+    return legacy;
+  }
+  return null;
+}
 
 export function setAuthToken(token) {
   if (token) {
@@ -49,22 +68,37 @@ export function setAuthToken(token) {
 }
 
 export function persistAuthTokens(access, refresh) {
-  if (access) sessionStorage.setItem(SK_ACCESS, access);
-  if (refresh) sessionStorage.setItem(SK_REFRESH, refresh);
+  if (access) {
+    sessionStorage.setItem(SK_ACCESS, access);
+    sessionStorage.removeItem(SK_ACCESS_LEGACY);
+  }
+  if (refresh) {
+    sessionStorage.setItem(SK_REFRESH, refresh);
+    sessionStorage.removeItem(SK_REFRESH_LEGACY);
+  }
   setAuthToken(access || null);
 }
 
 export function clearAuthTokens() {
   sessionStorage.removeItem(SK_ACCESS);
   sessionStorage.removeItem(SK_REFRESH);
+  sessionStorage.removeItem(SK_ACCESS_LEGACY);
+  sessionStorage.removeItem(SK_REFRESH_LEGACY);
   setAuthToken(null);
 }
 
 export function loadStoredAuth() {
   return {
-    access: sessionStorage.getItem(SK_ACCESS),
-    refresh: sessionStorage.getItem(SK_REFRESH),
+    access: readSessionKey(SK_ACCESS, SK_ACCESS_LEGACY),
+    refresh: readSessionKey(SK_REFRESH, SK_REFRESH_LEGACY),
   };
+}
+
+function dispatchAuthEvent(name, legacyName, detail) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(name, detail != null ? { detail } : undefined));
+  // Compat temporal con listeners antiguos
+  window.dispatchEvent(new CustomEvent(legacyName, detail != null ? { detail } : undefined));
 }
 
 api.interceptors.response.use(
@@ -83,7 +117,7 @@ api.interceptors.response.use(
     ) {
       return Promise.reject(error);
     }
-    const refresh = sessionStorage.getItem(SK_REFRESH);
+    const refresh = readSessionKey(SK_REFRESH, SK_REFRESH_LEGACY);
     if (!refresh) {
       return Promise.reject(error);
     }
@@ -101,19 +135,13 @@ api.interceptors.response.use(
       persistAuthTokens(data.access_token, data.refresh_token);
       config.headers = config.headers || {};
       config.headers.Authorization = `Bearer ${data.access_token}`;
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(
-          new CustomEvent("bioagromap:auth-refreshed", {
-            detail: { access_token: data.access_token },
-          })
-        );
-      }
+      dispatchAuthEvent(EVT_AUTH_REFRESHED, EVT_AUTH_REFRESHED_LEGACY, {
+        access_token: data.access_token,
+      });
       return api(config);
     } catch (e) {
       clearAuthTokens();
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("bioagromap:auth-expired"));
-      }
+      dispatchAuthEvent(EVT_AUTH_EXPIRED, EVT_AUTH_EXPIRED_LEGACY);
       return Promise.reject(e);
     }
   }

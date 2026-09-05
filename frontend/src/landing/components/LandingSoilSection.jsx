@@ -65,7 +65,7 @@ export default function LandingSoilSection({
       {mosaicError ? <p className="landing-error">{mosaicError}</p> : null}
       {!busy && !error && !mosaicError && !hasData ? (
         <p className="landing-hint">
-          No hay resultados guardados de Soil Plus. El equipo BioAgro puede generarlos desde el dashboard técnico.
+          No hay resultados guardados de Soil Plus. El equipo XeniaMAP puede generarlos desde el dashboard técnico.
         </p>
       ) : null}
       {hasData ? (

@@ -1,7 +1,7 @@
 """
 Combina bandas Sentinel-2 (L1C/L2A) en GeoTIFF.
 
-Portado desde 0.geoagro/satellital/combine_s2_bands.py — misma lógica de lectura y apilado.
+Misma lógica de lectura y apilado usada por el pipeline S2 de XeniaMAP.
 """
 
 from __future__ import annotations
@@ -237,7 +237,7 @@ def combine_bands_from_paths(
 ) -> Path:
     """
     Combina las rutas JP2 ya resueltas (p. ej. desde find_sentinel_r10_band_files)
-    en el orden indicado. Misma lógica que combine_bands_from_folder del script geoagro.
+    en el orden indicado.
     """
     missing = [b for b in bands if b not in band_files]
     if missing:

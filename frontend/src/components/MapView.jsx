@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { buildBaseStyle } from "../utils/geo";
+import {
+  ensureFireHotspotStarIcon,
+  ensureFireLiveHotspotIcons,
+  resolveFireStarImageId,
+} from "../utils/fireMapIcons";
 
 function rectangleFeatureCollection(c1, c2) {
   const w = Math.min(c1[0], c2[0]);
@@ -44,6 +49,13 @@ function polygonFromRing(pts) {
 
 const TMP_SRC = "_study_draw_tmp_src";
 const TMP_LINE = "_study_draw_tmp_line";
+const SAT_SRC = "_fire_basemap_satellite_src";
+const ESRI_SAT_TILES =
+  "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+
+function isBaseStyleLayerId(id) {
+  return id === "osm" || id === "esri" || id === "labels";
+}
 
 export default function MapView({
   mapRef,
@@ -127,6 +139,7 @@ export default function MapView({
 
     map.setStyle(buildBaseStyle(baseStyle));
     const repaint = () => {
+      if (!map.isStyleLoaded()) return;
       mapLayersRef.current.forEach((l) => {
         if (!l.geojsonData) return;
         if (map.getSource(l.id)) {
@@ -138,55 +151,250 @@ export default function MapView({
           } catch (_) {}
           map.removeSource(l.id);
         }
+        const isAoi = l.metadata?.fireRole === "aoi";
+        const starSymbol = l.metadata?.fireSymbol;
+        const isHotspotStar =
+          !!starSymbol ||
+          l.metadata?.fireRole === "hotspot" ||
+          l.metadata?.fireRole === "hotspots_24h" ||
+          l.metadata?.fireRole === "hotspots_48h";
         map.addSource(l.id, { type: "geojson", data: l.geojsonData });
+        if (isHotspotStar) {
+          ensureFireHotspotStarIcon(map);
+          ensureFireLiveHotspotIcons(map);
+          const iconId = resolveFireStarImageId(starSymbol || "star");
+          const iconSize = l.metadata?.fireIconSize ?? (starSymbol === "star" || !starSymbol ? 0.9 : 0.7);
+          const iconOpacity = l.metadata?.fireIconOpacity ?? 1;
+          map.addLayer({
+            id: l.id,
+            type: "symbol",
+            source: l.id,
+            layout: {
+              "icon-image": iconId,
+              "icon-size": iconSize,
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+              visibility: l.visible ? "visible" : "none",
+            },
+            paint: {
+              "icon-opacity": iconOpacity,
+            },
+          });
+          return;
+        }
+        const fillOpacity =
+          l.metadata?.fireFillOpacity ?? (isAoi ? 0 : 0.35);
+        const fillColor =
+          l.metadata?.fireFillColor || (isAoi ? "#dc2626" : "#2d6cdf");
+        const lineColor =
+          l.metadata?.fireLineColor || (isAoi ? "#dc2626" : "#1a3f8c");
+        const lineWidth = l.metadata?.fireLineWidth ?? (isAoi ? 3 : 2);
         map.addLayer({
           id: l.id,
           type: "fill",
           source: l.id,
-          paint: { "fill-color": "#2d6cdf", "fill-opacity": 0.35 },
+          paint: { "fill-color": fillColor, "fill-opacity": fillOpacity },
           layout: { visibility: l.visible ? "visible" : "none" },
         });
         map.addLayer({
           id: l.id + "_outline",
           type: "line",
           source: l.id,
-          paint: { "line-color": "#1a3f8c", "line-width": 2 },
+          paint: {
+            "line-color": lineColor,
+            "line-width": lineWidth,
+            "line-opacity": 1,
+          },
           layout: { visibility: l.visible ? "visible" : "none" },
         });
       });
     };
-    map.once("load", repaint);
+    const onStyleReady = () => {
+      repaint();
+    };
+    map.once("style.load", onStyleReady);
+    if (map.isStyleLoaded()) {
+      repaint();
+    }
+    return () => {
+      try {
+        map.off("style.load", onStyleReady);
+      } catch (_) {}
+    };
   }, [baseStyle]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !projectId || !token) return;
+    if (!map) return;
 
-    const removeRastersFromMap = () => {
+    const paintFireRasters = () => {
       if (!map.isStyleLoaded()) return;
-      const rasterIds = mapLayersRef.current
-        .filter((l) => l.kind === "raster")
-        .map((l) => l.id);
-      for (const id of rasterIds) {
-        const url = rasterBlobUrlsRef.current.get(id);
-        if (url) {
-          URL.revokeObjectURL(url);
-          rasterBlobUrlsRef.current.delete(id);
-        }
-        rasterFetchInFlightRef.current.delete(id);
+      const fireRasters = (mapLayersRef.current || []).filter(
+        (l) => l.kind === "raster" && l.metadata?.firePreview && Array.isArray(l.metadata?.bounds)
+      );
+      const keep = new Set(fireRasters.map((l) => l.id));
+
+      for (const [id, url] of [...rasterBlobUrlsRef.current.entries()]) {
+        if (keep.has(id)) continue;
+        URL.revokeObjectURL(url);
+        rasterBlobUrlsRef.current.delete(id);
         try {
           if (map.getLayer(id)) map.removeLayer(id);
           if (map.getSource(id)) map.removeSource(id);
         } catch (_) {}
       }
+
+      for (const layer of fireRasters) {
+        const [w, s, e, n] = layer.metadata.bounds;
+        const coordinates = [
+          [w, n],
+          [e, n],
+          [e, s],
+          [w, s],
+        ];
+        let url = rasterBlobUrlsRef.current.get(layer.id);
+        if (!url && layer.metadata.pngBase64) {
+          try {
+            const bin = atob(layer.metadata.pngBase64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+            url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+            rasterBlobUrlsRef.current.set(layer.id, url);
+          } catch (_) {
+            continue;
+          }
+        }
+        if (!url) continue;
+        try {
+          if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+          if (map.getSource(layer.id)) map.removeSource(layer.id);
+        } catch (_) {}
+        try {
+          map.addSource(layer.id, { type: "image", url, coordinates });
+          map.addLayer({
+            id: layer.id,
+            type: "raster",
+            source: layer.id,
+            paint: { "raster-opacity": 0.85 },
+            layout: { visibility: layer.visible ? "visible" : "none" },
+          });
+        } catch (_) {
+          /* style busy */
+        }
+      }
+
+      // Estrellas FIRMS por encima de dNBR/RGB (si no, quedan tapadas).
+      for (const l of mapLayersRef.current || []) {
+        if (!l?.metadata?.fireSymbol) continue;
+        if (!map.getLayer(l.id)) continue;
+        try {
+          map.moveLayer(l.id);
+        } catch (_) {
+          /* ignore */
+        }
+      }
     };
 
-    const run = () => {
-      if (map.isStyleLoaded()) removeRastersFromMap();
-      else map.once("load", removeRastersFromMap);
+    if (map.isStyleLoaded()) paintFireRasters();
+    else map.once("style.load", paintFireRasters);
+  }, [mapLayers, baseStyle]);
+
+  // Imagen satelital (Esri) como capa conmutable bajo las capas Fire.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const syncSatellite = () => {
+      if (!map.isStyleLoaded()) return;
+      const satLayer = (mapLayersRef.current || []).find(
+        (l) => l.metadata?.fireBasemapSatellite
+      );
+
+      const removeSatOverlay = () => {
+        const styleLayers = [...(map.getStyle()?.layers || [])];
+        for (const l of styleLayers) {
+          if (l.source === SAT_SRC) {
+            try {
+              map.removeLayer(l.id);
+            } catch (_) {}
+          }
+        }
+        try {
+          if (map.getSource(SAT_SRC)) map.removeSource(SAT_SRC);
+        } catch (_) {}
+      };
+
+      if (!satLayer) {
+        removeSatOverlay();
+        return;
+      }
+
+      const layerId = satLayer.id;
+      const visible = !!satLayer.visible;
+
+      if (!map.getSource(SAT_SRC)) {
+        map.addSource(SAT_SRC, {
+          type: "raster",
+          tiles: [ESRI_SAT_TILES],
+          tileSize: 256,
+          attribution: "Esri World Imagery",
+        });
+      }
+
+      if (!map.getLayer(layerId)) {
+        // Quitar overlays huérfanos con el mismo source.
+        for (const l of map.getStyle()?.layers || []) {
+          if (l.source === SAT_SRC && l.id !== layerId) {
+            try {
+              map.removeLayer(l.id);
+            } catch (_) {}
+          }
+        }
+        const styleLayers = map.getStyle()?.layers || [];
+        const firstOverlay = styleLayers.find((l) => !isBaseStyleLayerId(l.id));
+        const beforeId = firstOverlay?.id;
+        const layerDef = {
+          id: layerId,
+          type: "raster",
+          source: SAT_SRC,
+          paint: { "raster-opacity": 1 },
+          layout: { visibility: visible ? "visible" : "none" },
+        };
+        try {
+          if (beforeId) map.addLayer(layerDef, beforeId);
+          else map.addLayer(layerDef);
+        } catch (_) {
+          try {
+            map.addLayer(layerDef);
+          } catch (__) {
+            /* ignore */
+          }
+        }
+      } else {
+        try {
+          map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+        } catch (_) {}
+        try {
+          const styleLayers = map.getStyle()?.layers || [];
+          const firstOverlay = styleLayers.find(
+            (l) => !isBaseStyleLayerId(l.id) && l.id !== layerId && l.source !== SAT_SRC
+          );
+          if (firstOverlay?.id) map.moveLayer(layerId, firstOverlay.id);
+        } catch (_) {}
+      }
+
+      for (const l of mapLayersRef.current || []) {
+        if (!l?.metadata?.fireSymbol) continue;
+        if (!map.getLayer(l.id)) continue;
+        try {
+          map.moveLayer(l.id);
+        } catch (_) {}
+      }
     };
-    run();
-  }, [mapLayers, projectId, token, baseStyle]);
+
+    if (map.isStyleLoaded()) syncSatellite();
+    else map.once("style.load", syncSatellite);
+  }, [mapLayers, baseStyle]);
 
   useEffect(() => {
     const map = mapRef.current;

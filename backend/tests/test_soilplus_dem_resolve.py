@@ -7,7 +7,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from app.api.v1.preprocess import _resolve_soilplus_dem_path
+from app.services.soilplus import _resolve_soilplus_dem_path
 
 
 def _write_dem(path: Path, fill: int = 100) -> None:

@@ -5,7 +5,7 @@ MVP funcional para portal geoespacial agrícola con arquitectura SaaS multi-tena
 - Backend `FastAPI` + `Celery` + `Redis`
 - IA en microservicio Python (`PyTorch`, `OpenCV`, `rasterio`)
 - Base espacial `PostgreSQL + PostGIS + postgis_raster`
-- Frontend `React + Vite + Mapbox GL`
+- Frontend `React + Vite + MapLibre GL`
 - Observabilidad con `Prometheus + Grafana`
 
 ## Estructura
@@ -141,28 +141,14 @@ pytest -q
 - Escalado horizontal del backend mediante replicas
 - Recomendada separacion en imagenes versionadas por servicio
 
+## Desarrollo local (resumen)
 
-## SUBIR SERVICIOS
+```bash
+docker compose up -d
+```
 
-cd /home/deep/Documentos/XeniaMAP && docker compose ps -a --format 'table {{.Name}}\t{{.Status}}' 2>&1; echo '---'; pgrep -a 'ngrok http' || echo 'no ngrok'; curl -sS -o /dev/null -w 'local5173:%{http_code}\n' --max-time 3 http://127.0.0.1:5173/ 2>/dev/null || echo 'local5173:down'
+- Frontend: `http://localhost:5173`
+- API docs: `http://localhost:8000/docs`
 
-
-cd /home/deep/Documentos/XeniaMAP && docker compose up -d && for i in $(seq 1 90); do code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:5173/ 2>/dev/null || echo 000); if [ "$code" = "200" ] || [ "$code" = "304" ]; then echo "frontend_ok:$code after ${i}s"; break; fi; sleep 2; done; for i in $(seq 1 60); do code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8000/docs 2>/dev/null || echo 000); if [ "$code" = "200" ]; then echo "backend_ok:$code after ${i}s"; break; fi; sleep 3; done; docker compose ps --format 'table {{.Name}}\t{{.Status}}\t{{.Ports}}'
-
-
-ngrok http --url=xeniamap.ngrok.app 5173
-
-
-SOLO VERIFICA SI TODO ESTA ARRIBA
-
-sleep 4; curl -sS --max-time 5 http://127.0.0.1:4040/api/tunnels | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(t.get("public_url"), "->", t.get("config",{}).get("addr")) for t in d.get("tunnels",[])]'; curl -sS -o /dev/null -w 'public:%{http_code}\n' --max-time 15 -H 'ngrok-skip-browser-warning: 1' https://xeniamap.ngrok.app/
-
-
-
-
-
-
-
-
-
+Túnel público / ngrok: ver runbook privado en `docs/ops/ngrok.md` (no es parte del producto).
 

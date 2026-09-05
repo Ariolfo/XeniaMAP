@@ -398,12 +398,12 @@ def tenant_storage_browse(
 
 @router.get("/raster/external-data-status")
 def external_data_status(tenant_id: int = Depends(tenant_from_jwt)):
-    """Indica si hay disco externo (Data_Bioagro) montado y listo para recorte local."""
+    """Indica si hay disco externo montado y listo para recorte local."""
     root = external_data_root_path()
     return {
         "enabled": root is not None,
         "root": str(root) if root else None,
-        "label": "Data_Bioagro",
+        "label": "Disco externo",
     }
 
 
@@ -460,10 +460,10 @@ def external_data_browse(
 @router.post("/raster/external-data-mkdir")
 def external_data_mkdir(
     name: str = Form(..., description="Nombre de la carpeta nueva (un solo segmento)"),
-    parent_path: str = Form("", description="Ruta relativa bajo Data_Bioagro donde crear"),
+    parent_path: str = Form("", description="Ruta relativa bajo el disco externo donde crear"),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
-    """Crea una subcarpeta bajo Data_Bioagro (p. ej. un lote nuevo)."""
+    """Crea una subcarpeta bajo el disco externo (p. ej. un lote nuevo)."""
     root = external_data_root_path()
     if root is None:
         raise HTTPException(
@@ -482,7 +482,7 @@ def external_data_mkdir(
     try:
         dest.relative_to(root.resolve())
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Ruta fuera de Data_Bioagro") from exc
+        raise HTTPException(status_code=400, detail="Ruta fuera del disco externo") from exc
     if dest.exists():
         if not dest.is_dir():
             raise HTTPException(status_code=400, detail="Ya existe un archivo con ese nombre")

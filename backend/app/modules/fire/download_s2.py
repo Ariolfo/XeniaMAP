@@ -22,11 +22,15 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
+from app.services.cdse_client import (
+    CATALOGUE_URL,
+    STAC_SEARCH_URL,
+    get_copernicus_token,
+    odata_attribute,
+)
+
 logger = logging.getLogger(__name__)
 
-CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
-STAC_SEARCH_URL = "https://stac.dataspace.copernicus.eu/v1/search"
-TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
 PRODUCT_TYPE = "S2MSI2A"
 
 REQUIRED_10M = ("B02_10m", "B03_10m", "B04_10m")
@@ -55,10 +59,7 @@ def sensing_datetime_from_product(product: Dict) -> str:
 
 
 def extract_attribute(product: Dict, name: str, default=None):
-    for attr in product.get("Attributes") or []:
-        if attr.get("Name") == name:
-            return attr.get("Value", default)
-    return default
+    return odata_attribute(product, name, default)
 
 
 def product_cloud_cover(product: Dict) -> Optional[float]:
@@ -147,18 +148,7 @@ def query_s2_l2a_products(
 
 
 def _get_oauth_token(username: str, password: str) -> str:
-    r = requests.post(
-        TOKEN_URL,
-        data={
-            "client_id": "cdse-public",
-            "username": username,
-            "password": password,
-            "grant_type": "password",
-        },
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()["access_token"]
+    return get_copernicus_token(username, password)
 
 
 def _stac_required_assets(product_name: str, session: requests.Session) -> Dict[str, str]:
@@ -386,9 +376,10 @@ def download_period(
     s3_client = _get_s3_client()
     oauth_session: Optional[requests.Session] = None
     if s3_client is None:
-        from app.services.sentinel2 import get_copernicus_credentials
+        from app.services.cdse_client import get_copernicus_credentials
+        from app.core.config import settings
 
-        user, password = get_copernicus_credentials()
+        user, password = get_copernicus_credentials(settings)
         token = _get_oauth_token(user, password)
         oauth_session = requests.Session()
         oauth_session.headers.update({"Authorization": f"Bearer {token}"})

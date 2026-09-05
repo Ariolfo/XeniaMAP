@@ -127,9 +127,15 @@ export default function Sidebar({
   const brand = getClientBrand(email);
   /** Capas admin se controla desde el submenú Agro (DomainMenu), no desde pestañas del panel. */
   const layersOpen = layersPanelOpen || (isAdmin && activeTab === "capas");
+  // Tras login a veces queda activeTab="dashboard" en admin (panel vacío); usar Gestión.
+  const effectiveTab = isAdmin && activeTab === "dashboard" ? "admin" : activeTab;
 
   useEffect(() => {
     if (!isAdmin) return;
+    if (activeTab === "dashboard") {
+      setActiveTab("admin");
+      return;
+    }
     if (activeTab === "capas") {
       setLayersPanelOpen(true);
       setPanelOpen(false);
@@ -137,7 +143,7 @@ export default function Sidebar({
       setLayersPanelOpen(false);
       setPanelOpen(true);
     }
-  }, [activeTab, isAdmin]);
+  }, [activeTab, isAdmin, setActiveTab]);
 
   return (
     <aside className="panel">
@@ -189,7 +195,7 @@ export default function Sidebar({
         </div>
       ) : null}
 
-      {panelOpen && !layersPanelOpen && activeTab === "admin" && isAdmin ? (
+      {panelOpen && !layersPanelOpen && effectiveTab === "admin" && isAdmin ? (
         <>
           <div className="session-info">
             <span>
@@ -345,7 +351,7 @@ export default function Sidebar({
         </>
       ) : null}
 
-      {canShowAdminTabs && panelOpen && !layersPanelOpen && activeTab === "s1" ? (
+      {canShowAdminTabs && panelOpen && !layersPanelOpen && effectiveTab === "s1" ? (
         <Sentinel1Panel
           token={token}
           projectId={projectId}
@@ -372,7 +378,7 @@ export default function Sidebar({
         />
       ) : null}
 
-      {canShowAdminTabs && panelOpen && !layersPanelOpen && activeTab === "cargar" ? (
+      {canShowAdminTabs && panelOpen && !layersPanelOpen && effectiveTab === "cargar" ? (
         <UploadPanel
           token={token}
           projectId={projectId}
@@ -397,7 +403,7 @@ export default function Sidebar({
         />
       ) : null}
 
-      {canShowAdminTabs && panelOpen && !layersPanelOpen && activeTab === "prepro" ? (
+      {canShowAdminTabs && panelOpen && !layersPanelOpen && effectiveTab === "prepro" ? (
         <PreprocessPanel
           token={token}
           projectId={projectId}
@@ -428,7 +434,7 @@ export default function Sidebar({
         />
       ) : null}
 
-      {canShowAdminTabs && panelOpen && !layersPanelOpen && activeTab === "ps" ? (
+      {canShowAdminTabs && panelOpen && !layersPanelOpen && effectiveTab === "ps" ? (
         <PreprocessPanel
           token={token}
           projectId={projectId}
@@ -461,7 +467,7 @@ export default function Sidebar({
         />
       ) : null}
 
-      {canShowAdminTabs && panelOpen && !layersPanelOpen && activeTab === "smart" ? (
+      {canShowAdminTabs && panelOpen && !layersPanelOpen && effectiveTab === "smart" ? (
         <>
           <button
             type="button"

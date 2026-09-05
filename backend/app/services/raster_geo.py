@@ -415,8 +415,12 @@ def _stretch_band_to_u8_sentinel_friendly(band: np.ndarray) -> np.ndarray:
 
     # Reflectancia típica ×10000 (BOA) o valores grandes → pasar a reflectancia ~0–1+.
     # No recortar a [0,1] antes del estirado: p. ej. NIR (DN>10000) quedaría todo en 1.0 y la RGB se ve pálida / lavada.
+    # No dividir uint8 / 8-bit display (0–255): eso blanquea Fire_RGB_* y similares.
     p99 = float(np.nanpercentile(x[finite], 99.0))
-    if p99 > 1.8:
+    is_u8_like = band.dtype == np.uint8 or (50.0 < p99 <= 255.5)
+    if is_u8_like:
+        x = np.where(finite, x, np.nan)
+    elif p99 > 1.8:
         x = np.where(finite, x / 10000.0, np.nan)
     else:
         x = np.where(finite, x, np.nan)
@@ -436,6 +440,50 @@ def _stretch_band_to_u8_sentinel_friendly(band: np.ndarray) -> np.ndarray:
     y = np.power(y, 0.88)
     y = np.where(np.isfinite(y), y, 1.0)
     return (y * 255.0).astype(np.uint8)
+
+
+def render_display_ready_rgb_preview_png(
+    path: Path,
+    max_dim: int = 1536,
+    *,
+    nodata: float | int | None = 0,
+) -> bytes:
+    """
+    Preview de GeoTIFF RGB ya estirado a uint8 (p. ej. Fire_RGB_*_COG).
+    Sin re-estirado: evita el aspecto blanquecino/lavado.
+    Nodata → alfa 0 para que se vea el mapa base.
+    """
+    if Image is None:
+        raise RuntimeError("Pillow is required for raster previews")
+
+    with rasterio.open(path) as src:
+        h, w = src.height, src.width
+        scale = min(1.0, float(max_dim) / max(h, w))
+        out_h = max(1, int(h * scale))
+        out_w = max(1, int(w * scale))
+        count = min(3, int(src.count))
+        indexes = list(range(1, count + 1))
+        arr = src.read(
+            indexes=indexes,
+            out_shape=(len(indexes), out_h, out_w),
+            resampling=Resampling.bilinear,
+        )
+        nd = src.nodata if src.nodata is not None else nodata
+
+    while arr.shape[0] < 3:
+        arr = np.concatenate([arr, arr[:1]], axis=0)
+
+    rgb = np.transpose(arr[:3], (1, 2, 0)).astype(np.uint8)
+    if nd is None:
+        alpha = np.full(rgb.shape[:2], 255, dtype=np.uint8)
+    else:
+        mask = np.any(arr[:3] != nd, axis=0)
+        alpha = np.where(mask, 255, 0).astype(np.uint8)
+    rgba = np.dstack([rgb, alpha])
+    img = Image.fromarray(rgba, mode="RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 def render_s1_vh_vv_ratio_preview_png(
@@ -506,6 +554,84 @@ def render_s1_vh_vv_ratio_preview_png(
     t01 = _normalize_index_band_01(z)
     rgb = _index_scalar_to_rgb_colormap(t01, cmap_name=cmap)
     img = Image.fromarray(rgb, mode="RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+# Paleta discreta fija USGS/UN-SPIDER (clases 1–7). Sin estiramiento por percentiles.
+BURN_SEVERITY_CLASS_RGB: dict[int, tuple[int, int, int]] = {
+    1: (26, 152, 80),  # regeneración alta
+    2: (145, 207, 96),  # regeneración baja
+    3: (255, 255, 191),  # no quemado
+    4: (254, 224, 139),  # severidad baja
+    5: (252, 141, 89),  # moderada-baja
+    6: (215, 48, 39),  # moderada-alta
+    7: (165, 0, 38),  # severidad alta
+}
+
+BURN_SEVERITY_CLASS_LABELS: dict[int, str] = {
+    1: "Regeneración alta",
+    2: "Regeneración baja",
+    3: "No quemado",
+    4: "Severidad baja",
+    5: "Moderada-baja",
+    6: "Moderada-alta",
+    7: "Severidad alta",
+}
+
+
+def render_burn_severity_discrete_png(
+    path: Path,
+    max_dim: int = 1536,
+    *,
+    only_class: int | None = None,
+) -> bytes:
+    """
+    Preview RGBA de Fire_burn_severity.tif con colores fijos por clase 1–7.
+
+    - ``only_class``: si se indica (1–7), solo esa clase es opaca; el resto transparente.
+    - Sin ``only_class``: todas las clases 1–7 con su color; nodata transparente.
+    No usa percentiles ni colormap continuo.
+    """
+    if Image is None:
+        raise RuntimeError("Pillow is required for raster previews")
+    if only_class is not None and only_class not in BURN_SEVERITY_CLASS_RGB:
+        raise ValueError(f"Clase de severidad inválida: {only_class}")
+
+    with rasterio.open(path) as src:
+        h, w = src.height, src.width
+        scale = min(1.0, float(max_dim) / max(h, w))
+        out_h = max(1, int(h * scale))
+        out_w = max(1, int(w * scale))
+        # nearest: no mezclar códigos de clase al reducir
+        arr = src.read(
+            1,
+            out_shape=(out_h, out_w),
+            resampling=Resampling.nearest,
+        )
+        nodata = src.nodata
+
+    cls = np.asarray(arr)
+    rgba = np.zeros((out_h, out_w, 4), dtype=np.uint8)
+    if nodata is not None:
+        valid = cls != nodata
+    else:
+        valid = np.ones(cls.shape, dtype=bool)
+    valid &= np.isfinite(cls)
+
+    classes = [only_class] if only_class is not None else list(BURN_SEVERITY_CLASS_RGB.keys())
+    for code in classes:
+        rgb = BURN_SEVERITY_CLASS_RGB[code]
+        mask = valid & (cls == code)
+        if not np.any(mask):
+            continue
+        rgba[mask, 0] = rgb[0]
+        rgba[mask, 1] = rgb[1]
+        rgba[mask, 2] = rgb[2]
+        rgba[mask, 3] = 255
+
+    img = Image.fromarray(rgba, mode="RGBA")
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()

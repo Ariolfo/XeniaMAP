@@ -21,11 +21,17 @@ from dateutil.relativedelta import relativedelta
 from shapely import from_wkt
 from shapely.geometry import mapping
 
+from app.services.cdse_client import (
+    CATALOGUE_URL,
+    STAC_SEARCH_URL,
+    TOKEN_URL,
+    get_copernicus_token,
+    odata_cloud_cover_pct as _odata_cloud_cover_pct_shared,
+)
+from app.services.cdse_client import get_copernicus_credentials as _cdse_get_credentials
+
 logger = logging.getLogger(__name__)
 
-CATALOGUE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
-TOKEN_URL = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-STAC_SEARCH_URL = "https://stac.dataspace.copernicus.eu/v1/search"
 DATA_COLLECTION = "SENTINEL-2"
 MIN_COVERAGE = 0.75
 MAX_AOI_CLOUD = 0.25
@@ -42,18 +48,6 @@ def _count_month_slots(start: date, end: date) -> int:
     return max(n, 1)
 
 
-def get_copernicus_token(username: str, password: str) -> str:
-    data = {
-        "client_id": "cdse-public",
-        "username": username,
-        "password": password,
-        "grant_type": "password",
-    }
-    r = requests.post(TOKEN_URL, data=data, timeout=30)
-    r.raise_for_status()
-    return r.json()["access_token"]
-
-
 def get_copernicus_credentials() -> tuple[str, str]:
     """
     Usuario y contraseña CDSE (Copernicus Data Space Ecosystem) desde la configuración.
@@ -62,13 +56,7 @@ def get_copernicus_credentials() -> tuple[str, str]:
     """
     from app.core.config import settings
 
-    u = (settings.copernicus_user or "").strip()
-    p = settings.copernicus_password or ""
-    if not u or not p:
-        raise RuntimeError(
-            "Credenciales Copernicus no configuradas. Defina COPERNICUS_USER y COPERNICUS_PASSWORD."
-        )
-    return u, p
+    return _cdse_get_credentials(settings)
 
 
 def _product_covers_area(product: dict, aoi_geom) -> bool:
@@ -99,14 +87,7 @@ def _product_identifier(product: dict) -> str:
 
 def _odata_cloud_cover_pct(product: dict) -> float | None:
     """Cloud cover de la escena completa (Attributes OData), 0–100. No es del polígono."""
-    attrs = product.get("Attributes") or []
-    for att in attrs:
-        if str(att.get("Name") or "").lower() == "cloudcover":
-            try:
-                return float(att.get("Value"))
-            except (TypeError, ValueError):
-                return None
-    return None
+    return _odata_cloud_cover_pct_shared(product)
 
 
 def _stac_scl_https_url(product_name: str, session: requests.Session) -> str | None:

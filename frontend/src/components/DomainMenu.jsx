@@ -157,7 +157,7 @@ function DomainIcon({ id }) {
 }
 
 export default function DomainMenu({
-  activeDomain = "agro",
+  activeDomain = "ingreso",
   onSelectDomain,
   isAdmin = false,
   agroSubTab = "admin",

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import rasterio
 
-from app.api.v1.helpers import _tenant_storage
+from app.core.storage_paths import _tenant_storage
 from app.services.preprocess_pipeline_variant import indices_dir_name, normalize_pipeline_variant
 from app.services.s1_sar_indices import _safe_relative_under
 from app.services.s1_sar_time_series import (
