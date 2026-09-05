@@ -1,6 +1,7 @@
 fastapi==0.115.0
 # FastAPI 0.115 exige starlette<0.39; Starlette 1.x rompe el arranque (Router: unexpected on_startup).
 starlette>=0.37.2,<0.39.0
+httpx==0.27.2
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 sqlalchemy==2.0.35
