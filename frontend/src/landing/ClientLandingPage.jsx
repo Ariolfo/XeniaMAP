@@ -104,7 +104,10 @@ export default function ClientLandingPage({ mode: modeProp }) {
       persistAuthTokens(stored.access, stored.refresh);
       setToken(stored.access);
       try {
-        const [me, projRes] = await Promise.all([api.get("/auth/me"), api.get("/projects")]);
+        const [me, projRes] = await Promise.all([
+          api.get("/auth/me"),
+          api.get("/projects", { params: { module: "agro" } }),
+        ]);
         if (cancelled) return;
         const role = normalizeUserRole(me.data?.role);
         setUserRole(role);

@@ -1,20 +1,11 @@
 import { useEffect, useState } from "react";
-import AuthPanel from "./AuthPanel";
 import ProjectList from "./ProjectList";
 import LayersPanel from "./LayersPanel";
 import UploadPanel from "./UploadPanel";
 import PreprocessPanel from "./PreprocessPanel";
 import Sentinel1Panel from "./Sentinel1Panel";
+import BrandHeader from "./BrandHeader";
 import { getClientBrand } from "../branding";
-
-function isS1StackMode(mode) {
-  return (
-    mode === "visual-s1-vv" ||
-    mode === "visual-s1-vh" ||
-    mode === "visual-s1-index" ||
-    mode === "visual-s1-sar-indices"
-  );
-}
 
 function normalizeUserRole(role) {
   const value = String(role || "").trim().toLowerCase();
@@ -35,9 +26,6 @@ export default function Sidebar({
   token,
   userRole,
   email,
-  setEmail,
-  password,
-  setPassword,
   loading,
   message,
   projects,
@@ -61,13 +49,7 @@ export default function Sidebar({
   visualIndexGalleryKick = 0,
   stackMode,
   setStackMode,
-  onLogin,
   onLogout,
-  authStep = "email",
-  otpDebug = null,
-  onContinueEmail,
-  onVerifyOtp,
-  onResetEmailStep,
   onOpenStudyRequest,
   onOpenStudyOrders,
   onOpenShareProject,
@@ -78,10 +60,8 @@ export default function Sidebar({
   onToggleVisibility,
   onZoomToLayer,
   onHideLayer,
-  onOpenDashboard,
   onOpenClientDashboard,
   onOpenClientLanding,
-  onOpenAdminLanding,
   onOpenClientVisualization,
   onOpenSmartCluster,
   onOpenSmartSoil,
@@ -144,123 +124,27 @@ export default function Sidebar({
   const isCliente = !!token && normalizedRole === "cliente";
   const showStudyCta = !!token && isCliente;
   const canShowAdminTabs = isAdmin;
-  const canShowClientDashboardTab = isCliente;
   const brand = getClientBrand(email);
+  /** Capas admin se controla desde el submenú Agro (DomainMenu), no desde pestañas del panel. */
+  const layersOpen = layersPanelOpen || (isAdmin && activeTab === "capas");
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (activeTab === "capas") {
+      setLayersPanelOpen(true);
+      setPanelOpen(false);
+    } else {
+      setLayersPanelOpen(false);
+      setPanelOpen(true);
+    }
+  }, [activeTab, isAdmin]);
+
   return (
     <aside className="panel">
-      {brand.hideLogo ? (
-        <div className="brand-title-text" role="img" aria-label={brand.productName}>
-          {brand.productName}
-        </div>
-      ) : (
-        <img className="brand-logo" src={brand.logoSrc} alt={brand.logoAlt} />
-      )}
-      <div className="top-tabs" role="tablist">
-        <button
-          role="tab"
-          aria-selected={panelOpen && activeTab === "admin"}
-          className={panelOpen && activeTab === "admin" ? "active" : ""}
-          onClick={() => {
-            setActiveTab("admin");
-            setPanelOpen(true);
-            setLayersPanelOpen(false);
-          }}
-        >
-          Ingresar
-        </button>
-        {canShowAdminTabs ? (
-          <>
-            <button
-              role="tab"
-              aria-selected={panelOpen && activeTab === "cargar"}
-              className={panelOpen && activeTab === "cargar" ? "active" : ""}
-              onClick={() => {
-                setActiveTab("cargar");
-                setPanelOpen(true);
-                setLayersPanelOpen(false);
-              }}
-            >
-              Cargar
-            </button>
-            <button
-              role="tab"
-              aria-selected={panelOpen && activeTab === "s1"}
-              type="button"
-              className={
-                (panelOpen && activeTab === "s1" ? "active " : "") + "top-tab-s1"
-              }
-              onClick={() => {
-                setActiveTab("s1");
-                setPanelOpen(true);
-                setLayersPanelOpen(false);
-              }}
-            >
-              SI
-            </button>
-            <button
-              role="tab"
-              aria-selected={panelOpen && activeTab === "prepro"}
-              className={panelOpen && activeTab === "prepro" ? "active" : ""}
-              onClick={() => {
-                setActiveTab("prepro");
-                setPanelOpen(true);
-                setLayersPanelOpen(false);
-                if (isS1StackMode(stackMode)) setStackMode("visual-rgb");
-              }}
-            >
-              S2
-            </button>
-            <button
-              role="tab"
-              aria-selected={panelOpen && activeTab === "ps"}
-              type="button"
-              className={(panelOpen && activeTab === "ps" ? "active " : "") + "top-tab-ps"}
-              onClick={() => {
-                setActiveTab("ps");
-                setPanelOpen(true);
-                setLayersPanelOpen(false);
-                if (isS1StackMode(stackMode)) setStackMode("visual-rgb");
-              }}
-            >
-              PS
-            </button>
-            <button
-              role="tab"
-              aria-selected={panelOpen && activeTab === "smart"}
-              className={panelOpen && activeTab === "smart" ? "active" : ""}
-              onClick={() => {
-                setActiveTab("smart");
-                setPanelOpen(true);
-                setLayersPanelOpen(false);
-              }}
-            >
-              Smart
-            </button>
-            <button
-              type="button"
-              className="layers-dashboard-btn"
-              onClick={() => onOpenDashboard?.()}
-              disabled={loading || !projectId}
-              title={!projectId ? "Seleccione un proyecto para abrir dashboard" : "Abrir dashboard"}
-            >
-              Dashboard
-            </button>
-            <button
-              type="button"
-              className="layers-dashboard-btn"
-              onClick={() => onOpenAdminLanding?.()}
-              disabled={loading || !projectId}
-              title={
-                !projectId
-                  ? "Seleccione un proyecto para editar el informe narrativo"
-                  : "Abrir informe narrativo (edición admin)"
-              }
-            >
-              Informe narrativo
-            </button>
-          </>
-        ) : null}
-        {canShowClientDashboardTab ? (
+      <BrandHeader email={email} />
+      {/* Cliente: Proyectos + Capas. Admin: navegación solo en submenú Agro (DomainMenu). */}
+      {isCliente ? (
+        <div className="top-tabs" role="tablist">
           <button
             role="tab"
             aria-selected={panelOpen && activeTab === "dashboard"}
@@ -269,29 +153,28 @@ export default function Sidebar({
               setActiveTab("dashboard");
               setPanelOpen(true);
               setLayersPanelOpen(false);
-              onOpenClientDashboard?.();
             }}
           >
-            Dashboard
+            Proyectos
           </button>
-        ) : null}
-        <button
-          role="tab"
-          aria-selected={layersPanelOpen}
-          className={layersPanelOpen ? "tab-toggle active" : "tab-toggle"}
-          onClick={() => {
-            setLayersPanelOpen((p) => {
-              if (!p) setPanelOpen(false);
-              return !p;
-            });
-          }}
-          title={layersPanelOpen ? "Cerrar capas" : "Abrir capas"}
-        >
-          Capas
-        </button>
-      </div>
+          <button
+            role="tab"
+            aria-selected={layersPanelOpen}
+            className={layersPanelOpen ? "tab-toggle active" : "tab-toggle"}
+            onClick={() => {
+              setLayersPanelOpen((p) => {
+                if (!p) setPanelOpen(false);
+                return !p;
+              });
+            }}
+            title={layersPanelOpen ? "Cerrar capas" : "Abrir capas"}
+          >
+            Capas
+          </button>
+        </div>
+      ) : null}
 
-      {layersPanelOpen ? (
+      {layersOpen ? (
         <LayersPanel
           mapLayers={mapLayers}
           onToggleVisibility={onToggleVisibility}
@@ -300,129 +183,95 @@ export default function Sidebar({
         />
       ) : null}
 
-      {panelOpen && !layersPanelOpen && activeTab === "admin" ? (
+      {!token && panelOpen && !layersPanelOpen ? (
+        <div className="projects-empty">
+          Use el módulo <strong>Ingreso</strong> para iniciar sesión. Luego vuelva a Agro.
+        </div>
+      ) : null}
+
+      {panelOpen && !layersPanelOpen && activeTab === "admin" && isAdmin ? (
         <>
-          {!token ? (
-            <AuthPanel
-              email={email}
-              setEmail={setEmail}
-              password={password}
-              setPassword={setPassword}
-              loading={loading}
-              authStep={authStep}
-              otpDebug={otpDebug}
-              onContinueEmail={onContinueEmail}
-              onVerifyOtp={onVerifyOtp}
-              onResetEmailStep={onResetEmailStep}
-              onLogin={onLogin}
-            />
-          ) : (
-            <>
-              <div className="session-info">
-                <span>{email} ({userRole || "sin rol"})</span>
-                <button onClick={onLogout} disabled={loading} className="btn-link">
-                  Cerrar sesion
-                </button>
-              </div>
-              {showStudyCta ? (
-                <button
-                  type="button"
-                  className="study-primary-cta"
-                  onClick={() => onOpenStudyRequest?.()}
-                  disabled={loading}
-                >
-                  Solicitar estudio AgroGeoFísico
-                </button>
-              ) : null}
-              {isAdmin ? (
-                <button
-                  type="button"
-                  className="layers-dashboard-btn"
-                  onClick={() => onOpenUserManagement?.()}
-                  disabled={loading}
-                  title="Abrir gestion de usuarios y roles"
-                >
-                  Gestion Usuario
-                </button>
-              ) : null}
-              {isAdmin ? (
-                <button
-                  type="button"
-                  className="layers-dashboard-btn study-orders-btn"
-                  onClick={() => onOpenStudyOrders?.()}
-                  disabled={loading}
-                  title="Ver solicitudes AgroGeoFísico"
-                >
-                  Gestion de ordenes
-                </button>
-              ) : null}
-              {isAdmin ? (
-                <div className="admin-project-field">
-                  <label className="admin-project-label" htmlFor="admin-project-select">
-                    Proyecto de trabajo
-                  </label>
-                  <select
-                    id="admin-project-select"
-                    className="admin-project-select"
-                    value={
-                      projectId != null && projectId !== ""
-                        ? String(projectId)
-                        : ""
-                    }
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (v) onSelectProject(Number(v));
-                    }}
-                    disabled={loading || !projects?.length}
-                  >
-                    <option value="">— Elija proyecto —</option>
-                    {(projects || []).map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.status ?? "—"})
-                      </option>
-                    ))}
-                  </select>
-                  {!projects?.length ? (
-                    <p className="admin-project-hint">
-                      No hay proyectos. Los clientes crean proyectos al solicitar un estudio.
-                    </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="layers-dashboard-btn share-project-btn"
-                    onClick={() => onOpenShareProject?.()}
-                    disabled={loading || !projectId}
-                    title={
-                      projectId
-                        ? "Dar acceso de lectura a otro usuario cliente"
-                        : "Seleccione un proyecto primero"
-                    }
-                  >
-                    Compartir proyecto con usuario
-                  </button>
-                  <button
-                    type="button"
-                    className="layers-dashboard-btn admin-project-delete-btn"
-                    onClick={() => {
-                      if (projectId) onDeleteProject(Number(projectId));
-                    }}
-                    disabled={loading || !projectId}
-                    title={
-                      projectId
-                        ? "Eliminar el proyecto seleccionado y todas sus capas"
-                        : "Seleccione un proyecto primero"
-                    }
-                  >
-                    Eliminar proyecto
-                  </button>
-                </div>
-              ) : (
-                <div className="projects-empty">
-                  Sesion iniciada como cliente. Usa el boton "Dashboard" para ver tus proyectos.
-                </div>
-              )}
-            </>
-          )}
+          <div className="session-info">
+            <span>
+              {email} ({userRole || "sin rol"})
+            </span>
+            <button onClick={onLogout} disabled={loading} className="btn-link">
+              Cerrar sesion
+            </button>
+          </div>
+          <button
+            type="button"
+            className="layers-dashboard-btn"
+            onClick={() => onOpenUserManagement?.()}
+            disabled={loading}
+            title="Abrir gestion de usuarios y roles"
+          >
+            Gestion Usuario
+          </button>
+          <button
+            type="button"
+            className="layers-dashboard-btn study-orders-btn"
+            onClick={() => onOpenStudyOrders?.()}
+            disabled={loading}
+            title="Ver solicitudes AgroGeoFísico"
+          >
+            Gestion de ordenes
+          </button>
+          <div className="admin-project-field">
+            <label className="admin-project-label" htmlFor="admin-project-select">
+              Proyecto de trabajo
+            </label>
+            <select
+              id="admin-project-select"
+              className="admin-project-select"
+              value={projectId != null && projectId !== "" ? String(projectId) : ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v) onSelectProject(Number(v));
+              }}
+              disabled={loading || !projects?.length}
+            >
+              <option value="">— Elija proyecto —</option>
+              {(projects || []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.status ?? "—"})
+                </option>
+              ))}
+            </select>
+            {!projects?.length ? (
+              <p className="admin-project-hint">
+                No hay proyectos. Los clientes crean proyectos al solicitar un estudio.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="layers-dashboard-btn share-project-btn"
+              onClick={() => onOpenShareProject?.()}
+              disabled={loading || !projectId}
+              title={
+                projectId
+                  ? "Dar acceso de lectura a otro usuario cliente"
+                  : "Seleccione un proyecto primero"
+              }
+            >
+              Compartir proyecto con usuario
+            </button>
+            <button
+              type="button"
+              className="layers-dashboard-btn admin-project-delete-btn"
+              onClick={() => {
+                if (projectId) onDeleteProject(Number(projectId));
+              }}
+              disabled={loading || !projectId}
+              title={
+                projectId
+                  ? "Eliminar el proyecto seleccionado y todas sus capas"
+                  : "Seleccione un proyecto primero"
+              }
+            >
+              Eliminar proyecto
+            </button>
+          </div>
         </>
       ) : null}
 
@@ -438,12 +287,32 @@ export default function Sidebar({
               Solicitar estudio AgroGeoFísico
             </button>
           ) : null}
+          <ProjectList
+            projects={projects}
+            projectId={projectId}
+            projectName={projectName}
+            setProjectName={setProjectName}
+            loading={loading}
+            onSelectProject={onSelectProject}
+            onCreateProject={onCreateProject}
+            onUpdateProject={onUpdateProject}
+            onDeleteProject={onDeleteProject}
+            onLogout={onLogout}
+            email={email}
+            readOnly
+            allowDelete
+            title="Mis proyectos Agro"
+          />
           <button
             type="button"
             className="layers-dashboard-btn"
             onClick={() => onOpenClientDashboard?.()}
-            disabled={loading}
-            title="Abrir dashboard con resultados publicados"
+            disabled={loading || !projectId}
+            title={
+              !projectId
+                ? "Seleccione un proyecto en la lista"
+                : "Abrir dashboard con resultados publicados"
+            }
           >
             Abrir dashboard de resultados
           </button>
@@ -465,26 +334,14 @@ export default function Sidebar({
             className="layers-dashboard-btn"
             onClick={() => onOpenClientVisualization?.()}
             disabled={loading || !projectId}
-            title={!projectId ? "Seleccione un proyecto en la lista" : "Abrir visualización Sentinel-1, Sentinel-2 y alta resolución"}
+            title={
+              !projectId
+                ? "Seleccione un proyecto en la lista"
+                : "Abrir visualización Sentinel-1, Sentinel-2 y alta resolución"
+            }
           >
             Ver
           </button>
-          <ProjectList
-            projects={projects}
-            projectId={projectId}
-            projectName={projectName}
-            setProjectName={setProjectName}
-            loading={loading}
-            onSelectProject={onSelectProject}
-            onCreateProject={onCreateProject}
-            onUpdateProject={onUpdateProject}
-            onDeleteProject={onDeleteProject}
-            onLogout={onLogout}
-            email={email}
-            readOnly
-            allowDelete
-            title="Dashboard - Mis Proyectos"
-          />
         </>
       ) : null}
 

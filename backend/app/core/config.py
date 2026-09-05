@@ -84,6 +84,10 @@ class Settings(BaseSettings):
         default="ariolfo.camacho@saber.uis.edu.co",
         description="Destino de notificaciones de nuevas solicitudes de estudio AgroGeoFísico.",
     )
+    firms_map_key: str = Field(
+        default="",
+        description="NASA FIRMS MAP_KEY para validación VIIRS del módulo Fire.",
+    )
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

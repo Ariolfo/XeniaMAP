@@ -65,6 +65,7 @@ def _is_cliente_allowed_request(request: Request) -> bool:
         or path.startswith(f"{settings.api_v1_prefix}/raster")
         or path.startswith(f"{settings.api_v1_prefix}/preprocess/")
         or path.startswith(f"{settings.api_v1_prefix}/cluster-analysis/")
+        or path.startswith(f"{settings.api_v1_prefix}/fire-orders")
     ):
         return True
     if method == "DELETE":

@@ -106,6 +106,7 @@ class UpdateUserRoleRequest(BaseModel):
 
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Nombre del proyecto (obligatorio)")
+    module: str = Field(default="agro", description="Módulo: agro | fire | og | ch4")
 
     @field_validator("name")
     @classmethod
@@ -119,6 +120,7 @@ class ProjectCreate(BaseModel):
 class ProjectSummary(BaseModel):
     id: int
     name: str
+    module: str = "agro"
     owner_user_id: int | None = None
     owner_email: str | None = None
     status: str = "pendiente"
@@ -559,6 +561,108 @@ class StudyOrderStatusPatch(BaseModel):
         s = v.strip().lower().replace("_", " ")
         if s not in {"pendiente", "procesado", "publicado"}:
             raise ValueError("Estado debe ser: pendiente, procesado o publicado")
+        return s
+
+
+class FireOrderCreate(BaseModel):
+    request_name: str = Field(..., min_length=1, max_length=255)
+    geometry: dict = Field(..., description="GeoJSON Feature, FeatureCollection o Geometry")
+    applicant_name: str = Field(..., min_length=1, max_length=255)
+    applicant_email: str = Field(..., min_length=3, max_length=255)
+    applicant_phone: str = Field(default="", max_length=50)
+    company: str | None = None
+    department: str | None = None
+    pre_start: str = Field(..., description="YYYY-MM-DD ventana pre-incendio inicio")
+    pre_end: str = Field(..., description="YYYY-MM-DD ventana pre-incendio fin")
+    post_start: str = Field(..., description="YYYY-MM-DD ventana post-incendio inicio")
+    post_end: str | None = Field(default=None, description="YYYY-MM-DD; omitir = hoy")
+    max_cloud_cover: float = Field(default=95.0, ge=0, le=100)
+    extra_notes: str | None = None
+
+
+class FireOrderSummary(BaseModel):
+    id: int
+    request_name: str
+    department: str | None = None
+    applicant_name: str
+    applicant_email: str
+    status: str
+    pre_start: str
+    pre_end: str
+    post_start: str
+    post_end: str
+    max_cloud_cover: float
+    created_at: str
+    source_key: str | None = None
+    project_id: int | None = None
+    project_name: str | None = None
+
+
+class FireOrderDetail(BaseModel):
+    id: int
+    request_name: str
+    department: str | None = None
+    applicant_name: str
+    applicant_email: str
+    applicant_phone: str
+    company: str | None = None
+    geometry: dict
+    pre_start: str
+    pre_end: str
+    post_start: str
+    post_end: str
+    max_cloud_cover: float
+    status: str
+    download_task_id: str | None = None
+    download_message: str | None = None
+    download_manifest: dict | None = None
+    data_root: str | None = None
+    results_root: str | None = None
+    process_task_id: str | None = None
+    process_message: str | None = None
+    process_manifest: dict | None = None
+    firms_task_id: str | None = None
+    firms_message: str | None = None
+    firms_manifest: dict | None = None
+    source_key: str | None = None
+    extra_notes: str | None = None
+    created_at: str
+    project_id: int | None = None
+    project_name: str | None = None
+
+
+class FireOrderDownloadRequest(BaseModel):
+    pre_start: str | None = None
+    pre_end: str | None = None
+    post_start: str | None = None
+    post_end: str | None = None
+    max_cloud_cover: float | None = Field(default=None, ge=0, le=100)
+
+
+class FireOrderFirmsRequest(BaseModel):
+    fire_start: str | None = Field(default=None, description="YYYY-MM-DD ventana FIRMS inicio")
+    fire_end: str | None = Field(default=None, description="YYYY-MM-DD ventana FIRMS fin")
+
+
+class FireOrderStatusPatch(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def allowed_status(cls, v: str) -> str:
+        s = v.strip().lower()
+        allowed = {
+            "pendiente",
+            "en_descarga",
+            "descargado",
+            "procesando",
+            "procesado",
+            "validando",
+            "validado",
+            "error",
+        }
+        if s not in allowed:
+            raise ValueError(f"Estado debe ser uno de: {', '.join(sorted(allowed))}")
         return s
 
 

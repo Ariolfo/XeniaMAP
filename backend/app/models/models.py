@@ -59,6 +59,43 @@ class StudyOrder(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class FireOrder(Base):
+    """Solicitud independiente de análisis de severidad de incendios (módulo Fire)."""
+
+    __tablename__ = "fire_orders"
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    request_name = Column(String(255), nullable=False)
+    department = Column(String(255), nullable=True)
+    applicant_name = Column(String(255), nullable=False)
+    applicant_email = Column(String(255), nullable=False, default="")
+    applicant_phone = Column(String(50), nullable=False, default="")
+    company = Column(String(255), nullable=True)
+    geometry_geojson = Column(JSON, nullable=False)
+    pre_start = Column(Date, nullable=False)
+    pre_end = Column(Date, nullable=False)
+    post_start = Column(Date, nullable=False)
+    post_end = Column(Date, nullable=False)
+    max_cloud_cover = Column(Integer, nullable=False, default=95)
+    status = Column(String(32), nullable=False, default="pendiente", index=True)
+    download_task_id = Column(String(255), nullable=True)
+    download_message = Column(Text, nullable=True)
+    download_manifest = Column(JSON, nullable=True)
+    data_root = Column(String(1024), nullable=True)
+    results_root = Column(String(1024), nullable=True)
+    process_task_id = Column(String(255), nullable=True)
+    process_message = Column(Text, nullable=True)
+    process_manifest = Column(JSON, nullable=True)
+    firms_task_id = Column(String(255), nullable=True)
+    firms_message = Column(Text, nullable=True)
+    firms_manifest = Column(JSON, nullable=True)
+    source_key = Column(String(255), nullable=True, unique=True, index=True)
+    extra_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class ProjectShare(Base):
     """Acceso de lectura de un cliente a un proyecto de otro usuario (mismo tenant)."""
     __tablename__ = "project_shares"
@@ -75,6 +112,8 @@ class Project(Base):
     name = Column(String(255), nullable=False)
     owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     status = Column(String(32), nullable=False, default="pendiente")
+    # Dominio/módulo: agro | fire | og | ch4 (cada módulo lista solo los suyos)
+    module = Column(String(32), nullable=False, default="agro", index=True)
     processed_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     approved_by_admin_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     processing_started_at = Column(DateTime, nullable=True)

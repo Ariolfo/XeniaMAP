@@ -83,16 +83,39 @@ def create_project(
     db: Session = Depends(get_db),
     user: User = Depends(require_admin),
 ):
-    project = Project(name=payload.name, tenant_id=user.tenant_id, owner_user_id=user.id, status="pendiente")
+    module = str(getattr(payload, "module", None) or "agro").strip().lower() or "agro"
+    if module not in {"agro", "fire", "og", "ch4"}:
+        raise HTTPException(status_code=422, detail="module inválido")
+    project = Project(
+        name=payload.name,
+        tenant_id=user.tenant_id,
+        owner_user_id=user.id,
+        status="pendiente",
+        module=module,
+    )
     db.add(project)
     db.commit()
     db.refresh(project)
-    return {"id": project.id, "name": project.name, "status": project.status, "owner_user_id": project.owner_user_id}
+    return {
+        "id": project.id,
+        "name": project.name,
+        "status": project.status,
+        "owner_user_id": project.owner_user_id,
+        "module": project.module,
+    }
 
 
 @router.get("/projects")
-def list_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    q = db.query(Project).filter(Project.tenant_id == user.tenant_id)
+def list_projects(
+    module: str = "agro",
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Lista proyectos del tenant filtrados por módulo (agro, fire, og, ch4)."""
+    mod = str(module or "agro").strip().lower() or "agro"
+    if mod not in {"agro", "fire", "og", "ch4"}:
+        raise HTTPException(status_code=422, detail="module inválido")
+    q = db.query(Project).filter(Project.tenant_id == user.tenant_id, Project.module == mod)
     if str(user.role).lower() == "cliente":
         linked_order_projects = (
             db.query(StudyOrder.project_id)
@@ -114,7 +137,7 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
     projects = q.order_by(Project.id.desc()).all()
     orders_by_project: dict[int, StudyOrder] = {}
     project_ids = [p.id for p in projects]
-    if project_ids:
+    if project_ids and mod == "agro":
         for order in (
             db.query(StudyOrder)
             .filter(StudyOrder.project_id.in_(project_ids))
@@ -131,6 +154,7 @@ def list_projects(db: Session = Depends(get_db), user: User = Depends(get_curren
             {
                 "id": p.id,
                 "name": p.name,
+                "module": getattr(p, "module", None) or mod,
                 "owner_user_id": p.owner_user_id,
                 "owner_email": owner.email if owner else None,
                 "status": p.status,

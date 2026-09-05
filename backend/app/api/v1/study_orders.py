@@ -195,6 +195,7 @@ def create_study_order(
         owner_user_id=user.id,
         tenant_id=user.tenant_id,
         status="pendiente",
+        module="agro",
     )
     db.add(project)
     db.flush()

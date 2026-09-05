@@ -7,6 +7,10 @@ function projectStatusLabel(status) {
     pendiente: "Pendiente",
     procesado: "Procesado",
     publicado: "Publicado",
+    en_descarga: "En descarga",
+    descargado: "Descargado",
+    validado: "Validado",
+    error: "Error",
   };
   return map[s] || status || "—";
 }
@@ -66,7 +70,9 @@ export default function ProjectList({
       <div className="projects-section">
         <div className="projects-header">{title}</div>
         {projects.length === 0 ? (
-          <div className="projects-empty">Sin proyectos. Crea uno nuevo.</div>
+          <div className="projects-empty">
+            {readOnly ? "Sin proyectos asignados." : "Sin proyectos. Crea uno nuevo."}
+          </div>
         ) : (
           <ul className="projects-list">
             {projects.map((p) => (

@@ -18,6 +18,10 @@ import {
 } from "./utils/geo";
 import Sidebar from "./components/Sidebar";
 import MapView from "./components/MapView";
+import DomainMenu, { DOMAIN_OPTIONS } from "./components/DomainMenu";
+import IngresoPanel from "./components/IngresoPanel";
+import BrandHeader from "./components/BrandHeader";
+import FirePanel from "./components/fire/FirePanel";
 import AdvancedDashboard from "./components/dashboard/AdvancedDashboard";
 import SmartClusterModal from "./components/dashboard/SmartClusterModal";
 import SmartSoilModal from "./components/dashboard/SmartSoilModal";
@@ -81,6 +85,7 @@ export default function App() {
   const [visualIndexGalleryKick, setVisualIndexGalleryKick] = useState(0);
   const [visualIndexGalleryKickPs, setVisualIndexGalleryKickPs] = useState(0);
   const [sidebarTab, setSidebarTab] = useState("admin");
+  const [activeDomain, setActiveDomain] = useState("agro");
   const [recorteLayerId, setRecorteLayerId] = useState("");
   const [preproGalleryKick, setPreproGalleryKick] = useState(0);
   const [preproClusterVizKick, setPreproClusterVizKick] = useState(0);
@@ -231,11 +236,13 @@ export default function App() {
 
   useEffect(() => {
     if (!token) {
-      setSidebarTab("admin");
+      setSidebarTab("dashboard");
       return;
     }
     if (normalizedUserRole === "cliente") {
       setSidebarTab("dashboard");
+    } else if (normalizedUserRole === "admin") {
+      setSidebarTab("admin");
     }
   }, [token, normalizedUserRole]);
 
@@ -645,14 +652,15 @@ export default function App() {
     setMessage("No se pudo calcular la extension de esta capa.");
   }
 
-  async function fetchProjects(accessToken) {
+  async function fetchProjects(accessToken, module = "agro") {
     try {
       setAuthToken(accessToken);
-      const res = await api.get("/projects");
-      setProjects(res.data);
-      return res.data;
+      const res = await api.get("/projects", { params: { module } });
+      const list = Array.isArray(res.data) ? res.data : [];
+      if (module === "agro") setProjects(list);
+      return list;
     } catch (_) {
-      setProjects([]);
+      if (module === "agro") setProjects([]);
       return [];
     }
   }
@@ -845,8 +853,16 @@ export default function App() {
       setUserRole(normalizeUserRole(res.data?.role));
       persistAuthTokens(accessToken, res.data.refresh_token);
       persistViewerEmail(effectiveEmail);
-      const userProjects = await fetchProjects(accessToken);
-      setMessage(`Sesion iniciada. ${userProjects.length} proyecto(s) encontrado(s).`);
+      const userProjects = await fetchProjects(accessToken, "agro");
+      const fireProjects = await fetchProjects(accessToken, "fire");
+      const fireCount = (fireProjects || []).length;
+      setMessage(
+        fireCount
+          ? `Sesion iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}. Use el menú de módulos.`
+          : `Sesion iniciada. ${userProjects.length} proyecto(s) Agro.`
+      );
+      setSidebarTab("dashboard");
+      setActiveDomain("agro");
       setAuthStep("email");
       setOtpDebug(null);
       setPendingRegEmail("");
@@ -925,15 +941,23 @@ export default function App() {
       setUserRole(normalizeUserRole(res.data?.role));
       persistAuthTokens(accessToken, res.data.refresh_token);
       persistViewerEmail(pendingRegEmail);
-      const userProjects = await fetchProjects(accessToken);
+      const userProjects = await fetchProjects(accessToken, "agro");
+      const fireProjects = await fetchProjects(accessToken, "fire");
+      const fireCount = (fireProjects || []).length;
       const tpw = res.data.temporary_password;
       if (tpw) {
         setMessage(
           `Cuenta creada. Guarde su contraseña para próximos accesos: ${tpw} (${userProjects.length} proyecto(s).)`
         );
       } else {
-        setMessage(`Código verificado. Sesión iniciada. ${userProjects.length} proyecto(s).`);
+        setMessage(
+          fireCount
+            ? `Sesión iniciada. Agro: ${userProjects.length} · Fire: ${fireCount}. Use el menú de módulos.`
+            : `Código verificado. Sesión iniciada. ${userProjects.length} proyecto(s) Agro.`
+        );
       }
+      setSidebarTab("dashboard");
+      setActiveDomain("agro");
       setAuthStep("email");
       setOtpDebug(null);
       setPendingRegEmail("");
@@ -1571,8 +1595,96 @@ export default function App() {
     return p?.name || "";
   }, [projects, projectId]);
 
+  function selectDomain(domainId) {
+    const domain = DOMAIN_OPTIONS.find((d) => d.id === domainId);
+    if (!domain) return;
+    setActiveDomain(domainId);
+    if (!domain.ready) {
+      setMessage(
+        `Módulo ${domain.label} (${domain.title}) en preparación. Por ahora el flujo disponible es Agro.`
+      );
+    } else if (domainId === "ingreso") {
+      setMessage("Ingreso: inicie sesión o gestione su sesión activa.");
+    } else if (domainId === "fire") {
+      setMessage("Módulo Fire: severidad de incendios (solicitudes + descarga S2).");
+      if (token && isCliente) {
+        fetchProjects(token);
+        setSidebarTab("dashboard");
+      }
+    } else if (domainId === "agro" && token && isCliente) {
+      fetchProjects(token);
+      setSidebarTab("dashboard");
+    } else if (domainId === "agro" && token && isAdmin) {
+      fetchProjects(token);
+      setSidebarTab("admin");
+      setMessage("Agro: use el submenú (Gestión, S2, PS…) bajo Agro.");
+    } else if (domainId === "agro" && !token) {
+      setMessage("Use el módulo Ingreso para iniciar sesión. Luego entre a Agro.");
+    }
+  }
+
+  function selectAgroSub(item) {
+    if (!item) return;
+    if (item.action === "dashboard") {
+      if (token) fetchProjects(token);
+      if (!projectId) {
+        setMessage("Seleccione un proyecto publicado para abrir el dashboard de resultados.");
+        return;
+      }
+      setDashboardOpen(true);
+      return;
+    }
+    if (item.action === "informe") {
+      if (!projectId) {
+        setMessage("Seleccione un proyecto para editar el informe narrativo.");
+        return;
+      }
+      navigate(`/admin/informe/${projectId}`);
+      return;
+    }
+    setActiveDomain("agro");
+    // Capas: segundo clic cierra y vuelve a Gestión
+    if (item.id === "capas" && sidebarTab === "capas") {
+      setSidebarTab("admin");
+      return;
+    }
+    setSidebarTab(item.id);
+    if (
+      (item.id === "prepro" || item.id === "ps") &&
+      String(stackMode || "").startsWith("visual-s1")
+    ) {
+      setStackMode("visual-rgb");
+    }
+  }
+
   return (
-    <div className="layout">
+    <div className={`layout layout-domain-${activeDomain}${token && isAdmin && activeDomain === "agro" ? " layout--agro-admin" : ""}`}>
+      <DomainMenu
+        activeDomain={activeDomain}
+        onSelectDomain={selectDomain}
+        isAdmin={!!token && isAdmin}
+        agroSubTab={sidebarTab}
+        onSelectAgroSub={selectAgroSub}
+        agroActionsDisabled={loading || !projectId}
+      />
+      {activeDomain === "ingreso" ? (
+        <IngresoPanel
+          token={token}
+          userRole={normalizedUserRole}
+          email={email}
+          setEmail={setEmail}
+          password={password}
+          setPassword={setPassword}
+          loading={loading}
+          authStep={authStep}
+          otpDebug={otpDebug}
+          onContinueEmail={continueEmailFlow}
+          onVerifyOtp={verifyOtpRegister}
+          onResetEmailStep={resetEmailAuthStep}
+          onLogin={loginWithCredentials}
+          onLogout={logoutSession}
+        />
+      ) : activeDomain === "agro" ? (
       <Sidebar
         activeTab={sidebarTab}
         setActiveTab={setSidebarTab}
@@ -1592,9 +1704,6 @@ export default function App() {
         token={token}
         userRole={normalizedUserRole}
         email={email}
-        setEmail={setEmail}
-        password={password}
-        setPassword={setPassword}
         loading={loading}
         message={message}
         projects={projects}
@@ -1616,7 +1725,6 @@ export default function App() {
         setSelectedIndices={setSelectedIndices}
         stackMode={stackMode}
         setStackMode={setStackMode}
-        onLogin={loginWithCredentials}
         onLogout={logoutSession}
         onSelectProject={(id) => selectProject(id, token)}
         onCreateProject={createProject}
@@ -1625,14 +1733,6 @@ export default function App() {
         onToggleVisibility={toggleLayerVisibility}
         onZoomToLayer={zoomToLayer}
         onHideLayer={(lid) => setLayerVisibility(lid, false)}
-        onOpenDashboard={() => {
-          if (token) fetchProjects(token);
-          if (!projectId) {
-            setMessage("Seleccione un proyecto publicado para abrir el dashboard de resultados.");
-            return;
-          }
-          setDashboardOpen(true);
-        }}
         onOpenClientDashboard={() => {
           if (token) fetchProjects(token);
           if (!projectId) {
@@ -1647,17 +1747,6 @@ export default function App() {
             return;
           }
           navigate(`/cliente/${projectId}`);
-        }}
-        onOpenAdminLanding={() => {
-          if (!isAdmin) {
-            setMessage("Acceso restringido: informe narrativo de edición solo para admin.");
-            return;
-          }
-          if (!projectId) {
-            setMessage("Seleccione un proyecto en la lista para editar el informe narrativo.");
-            return;
-          }
-          navigate(`/admin/informe/${projectId}`);
         }}
         onOpenClientVisualization={() => setClientVizModalOpen(true)}
         onOpenSmartCluster={() => {
@@ -1713,11 +1802,6 @@ export default function App() {
           }
           setShareProjectOpen(true);
         }}
-        authStep={authStep}
-        otpDebug={otpDebug}
-        onContinueEmail={continueEmailFlow}
-        onVerifyOtp={verifyOtpRegister}
-        onResetEmailStep={resetEmailAuthStep}
         onUploadLote={uploadLote}
         onUploadRaster={uploadRaster}
         onRunAI={runAI}
@@ -1755,6 +1839,34 @@ export default function App() {
         s2Download={s2Download}
         s1Download={s1Download}
       />
+      ) : activeDomain === "fire" ? (
+        <FirePanel
+          token={token}
+          isAdmin={isAdmin}
+          email={email}
+          onStatusMessage={setMessage}
+          onSelectProject={(id) => selectProject(id, token)}
+          onProjectsRefresh={() => {
+            if (token) fetchProjects(token);
+          }}
+        />
+      ) : (
+        <aside className="panel domain-placeholder" aria-live="polite">
+          <BrandHeader email={email} />
+          <h2 className="domain-placeholder-title">
+            {DOMAIN_OPTIONS.find((d) => d.id === activeDomain)?.label || "Módulo"}
+          </h2>
+          <p className="domain-placeholder-text">
+            {DOMAIN_OPTIONS.find((d) => d.id === activeDomain)?.title}. En preparación.
+          </p>
+          <p className="domain-placeholder-hint">
+            Elige <strong>Agro</strong> en el menú izquierdo para usar el flujo actual de XeniaMAP.
+          </p>
+          <button type="button" className="domain-placeholder-btn" onClick={() => selectDomain("agro")}>
+            Ir a Agro
+          </button>
+        </aside>
+      )}
       <MapView
         mapRef={mapRef}
         mapLayers={mapLayers}

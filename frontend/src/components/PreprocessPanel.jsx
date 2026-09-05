@@ -356,7 +356,7 @@ export default function PreprocessPanel({
     setL2aError("");
     try {
       setAuthToken(token);
-      const r = await api.get("/projects");
+      const r = await api.get("/projects", { params: { module: "agro" } });
       const others = (r.data || []).filter((p) => Number(p.id) !== Number(projectId));
       setL2aProjectsList(others);
       if (others.length === 0) {
