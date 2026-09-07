@@ -6,6 +6,7 @@ import {
   fetchFireResultGeojson,
   fetchFirmsLive,
 } from "../utils/fireLazyLoad";
+import { applyLayerStyleToMap } from "../utils/layerPaintStyle";
 
 function paintOptsFromFireMeta(meta, visible = true) {
   if (meta?.fireSymbol) {
@@ -13,13 +14,15 @@ function paintOptsFromFireMeta(meta, visible = true) {
       symbol: meta.fireSymbol,
       visible,
       iconSize: meta.fireIconSize ?? (meta.fireSymbol === "star" ? 0.9 : 0.7),
-      iconOpacity: meta.fireIconOpacity ?? 1,
+      iconOpacity: meta.uiOpacity ?? meta.fireIconOpacity ?? 1,
     };
   }
+  const fillMode = meta?.uiFillMode === "outline" ? "outline" : "fill";
+  const opacity = meta?.uiOpacity ?? meta?.fireFillOpacity ?? 0.35;
   return {
     fillColor: meta?.fireFillColor || "#2d6cdf",
-    lineColor: meta?.fireLineColor || "#1a3f8c",
-    fillOpacity: meta?.fireFillOpacity ?? 0.35,
+    lineColor: meta?.uiLineColor || meta?.fireLineColor || "#1a3f8c",
+    fillOpacity: fillMode === "outline" ? 0 : opacity,
     lineWidth: meta?.fireLineWidth ?? 2,
     visible,
   };
@@ -96,6 +99,10 @@ export default function useFireMap({
               lid,
               gj,
               paintOptsFromFireMeta(cur?.metadata || layer.metadata, cur?.visible !== false)
+            );
+            applyLayerStyleToMap(
+              mapRef.current,
+              mapLayersRef.current.find((l) => l.id === lid) || cur || layer
             );
             if (layer.metadata.fireSymbol && cur?.visible !== false) {
               const map = mapRef.current;
@@ -261,10 +268,12 @@ export default function useFireMap({
                 : {}),
               ...(item.filename.includes("recommended")
                 ? {
-                    fireFillColor: "#ff7a00",
-                    fireLineColor: "#ff4500",
-                    fireFillOpacity: 0.9,
-                    fireLineWidth: 2.5,
+                    // Naranja pálido + opacidad baja para que los hotspots (estrella roja) resalten.
+                    fireFillColor: "#ffd4a8",
+                    fireLineColor: "#e8a87c",
+                    fireFillOpacity: 0.4,
+                    fireLineWidth: 2,
+                    fireClassColor: "#ffd4a8",
                   }
                 : item.filename.includes("validated")
                   ? {

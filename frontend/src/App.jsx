@@ -83,6 +83,7 @@ export default function App() {
     toggleLayerVisibility,
     setLayerVisibility,
     patchMapLayer,
+    setLayerStyle,
     clearAllMapLayers,
   } = useMapLayers(mapRef);
 
@@ -745,6 +746,7 @@ export default function App() {
         }
         onToggle={activeDomain === "fire" ? toggleFireLayerVisibility : toggleLayerVisibility}
         onToggleDnbrGroup={activeDomain === "fire" ? toggleFireDnbrGroup : undefined}
+        onLayerStyleChange={setLayerStyle}
         baseStyle={baseStyle}
         onBaseStyleChange={setBaseStyle}
         orderTitle={

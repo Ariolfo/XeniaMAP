@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { bboxFromGeojson } from "../utils/geo";
 import { createLayerDescriptor, createLayerStore } from "../map/LayerStore";
+import { applyLayerStyleToMap, clamp01 } from "../utils/layerPaintStyle";
 
 /**
  * Hook React sobre LayerStore único (F6).
@@ -121,6 +122,26 @@ export default function useMapLayers(mapRef) {
     );
   }
 
+  /**
+   * Actualiza estilo de capa (opacidad / relleno|solo borde / color borde) y lo aplica al mapa.
+   * @param {string} lid
+   * @param {{ opacity?: number, fillMode?: 'fill'|'outline', lineColor?: string }} style
+   */
+  function setLayerStyle(lid, style = {}) {
+    const metaPatch = {};
+    if (style.opacity != null) metaPatch.uiOpacity = clamp01(style.opacity, 0.5);
+    if (style.fillMode === "fill" || style.fillMode === "outline") {
+      metaPatch.uiFillMode = style.fillMode;
+    }
+    if (typeof style.lineColor === "string" && style.lineColor.trim()) {
+      metaPatch.uiLineColor = style.lineColor.trim();
+    }
+    if (Object.keys(metaPatch).length === 0) return;
+    patchMapLayer(lid, { metadata: metaPatch });
+    const layer = mapLayersRef.current.find((l) => l.id === lid);
+    applyLayerStyleToMap(mapRef.current, layer);
+  }
+
   function clearAllMapLayers() {
     const map = mapRef.current;
     mapLayersRef.current.forEach((l) => {
@@ -167,6 +188,7 @@ export default function useMapLayers(mapRef) {
     toggleLayerVisibility,
     setLayerVisibility,
     patchMapLayer,
+    setLayerStyle,
     clearAllMapLayers,
   };
 }
