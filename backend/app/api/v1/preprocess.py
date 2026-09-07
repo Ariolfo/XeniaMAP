@@ -5,7 +5,6 @@ import math
 import re
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +27,11 @@ from app.api.v1.helpers import (
     resolve_source_subpath,
     validate_upload_size,
 )
-
+from app.application.agro.landing_markdown import (
+    EnqueueLandingMarkdown,
+    ListLandingMarkdownFiles,
+    ResolveLandingMarkdownPath,
+)
 from app.services.preprocess_pipeline_variant import (
     indices_dir_name,
     normalize_pipeline_variant,
@@ -1059,13 +1062,6 @@ def preprocess_s2_l2a_recortes(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-_LANDING_MARKDOWN_NAMES = {
-    "PS": "landing_narrativa_PS.md",
-    "S1": "landing_narrativa_S1.md",
-    "S2": "landing_narrativa_S2.md",
-}
-
-
 @router.post("/preprocess/landing-markdown-generate/{project_id}")
 def landing_markdown_generate(
     project_id: int,
@@ -1074,19 +1070,11 @@ def landing_markdown_generate(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """Encola la generación de los 3 Markdown de la landing (PS, S1, S2), cada uno ≤ 4.9 MB."""
-    from app.core.celery_task_registry import register_celery_task
-    from app.tasks.jobs import landing_markdown_pipeline
-
     require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        async_result = landing_markdown_pipeline.delay(project_id)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No se pudo encolar la generación de Markdown (Redis/worker): {exc!s}",
-        ) from exc
-    register_celery_task(async_result.id, tenant_id=tenant_id, project_id=project_id, task_name="landing_markdown_pipeline")
-    return {"status": "queued", "task_id": async_result.id}
+        return EnqueueLandingMarkdown().execute(tenant_id=tenant_id, project_id=project_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/landing-markdown-files/{project_id}")
@@ -1098,22 +1086,7 @@ def landing_markdown_files(
 ):
     """Lista los Markdown generados en ``markdown/`` con tamaño y fecha."""
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    md_dir = _tenant_storage(tenant_id, project_id, "markdown")
-    files = []
-    for sensor, name in _LANDING_MARKDOWN_NAMES.items():
-        p = md_dir / name
-        if not p.is_file():
-            continue
-        st = p.stat()
-        files.append(
-            {
-                "sensor": sensor,
-                "name": name,
-                "size_mb": round(st.st_size / (1024 * 1024), 2),
-                "modified_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-            }
-        )
-    return {"project_id": project_id, "files": files, "max_md_mb": 4.9}
+    return ListLandingMarkdownFiles().execute(tenant_id=tenant_id, project_id=project_id)
 
 
 @router.get("/preprocess/landing-markdown-download/{project_id}")
@@ -1126,13 +1099,15 @@ def landing_markdown_download(
 ):
     """Descarga uno de los Markdown generados."""
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    name = _LANDING_MARKDOWN_NAMES.get(str(sensor).strip().upper())
-    if not name:
-        raise HTTPException(status_code=400, detail="sensor debe ser PS, S1 o S2")
-    p = _tenant_storage(tenant_id, project_id, "markdown") / name
-    if not p.is_file():
-        raise HTTPException(status_code=404, detail=f"No existe {name}; genera los Markdown primero.")
-    return FileResponse(p, media_type="text/markdown", filename=name)
+    try:
+        p = ResolveLandingMarkdownPath().execute(
+            tenant_id=tenant_id, project_id=project_id, sensor=sensor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(p, media_type="text/markdown", filename=p.name)
 
 
 @router.get("/preprocess/task-status/{task_id}")

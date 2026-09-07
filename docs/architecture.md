@@ -1,20 +1,46 @@
 # Arquitectura XeniaMAP (monolito modular + hexagonal)
 
-El producto sigue siendo un **monolito desplegable** (FastAPI + Celery + React).
-Se introduce hexagonal **por dominio**, empezando por Fire y CDSE.
+El producto es un **monolito desplegable** (FastAPI + Celery + React).  
+Estilo rector (**H0**): **Hexagonal-first + Clean-lite** *dentro* del monolito modular — ver ADR:
+
+→ [`ops/adr-002-hexagonal-modular.md`](ops/adr-002-hexagonal-modular.md)
+
+Owners por contexto: [`ops/module_owners.md`](ops/module_owners.md).  
+Roadmap H0→B1: [`ops/hexagonal_modular_roadmap_checkpoint_2026-09-06.md`](ops/hexagonal_modular_roadmap_checkpoint_2026-09-06.md).
 
 ## Capas backend
 
 ```text
 app/
   domain/           # Puertos e invariantes (sin FastAPI/SQLAlchemy)
-  application/      # Casos de uso (orquestan puertos)
+  application/      # Casos de uso (orquestan puertos) — única orquestación nueva
   infrastructure/   # Adaptadores (NASA FIRMS, CDSE, disco, …)
   api/v1/           # Entrega HTTP (thin controllers)
   modules/fire/     # Pipelines legacy (dNBR/scripts) + facades de compat
-  services/         # Algoritmos GIS compartidos (migrar gradualmente)
-  tasks/            # Celery
+  services/         # Algoritmos GIS compartidos (migrar I/O gradualmente)
+  tasks/            # Celery → llama application/
 ```
+
+### Regla de imports (código nuevo)
+
+| Permitido | Evitar en código nuevo |
+|-----------|-------------------------|
+| `api` / `tasks` → `application` | `api` → `services` o `modules` (legado hasta H1/H4) |
+| `application` → `domain` ports + GIS puro en `services/` | `domain` → FastAPI / SQLAlchemy / Celery |
+| `infrastructure` implementa ports | `infrastructure` → `application` |
+| | `modules/fire` → `api` |
+
+Detalle y DoD de PR: **ADR-002**.
+
+### Definition of Done (feature)
+
+1. Flujo expuesto vía **use case** en `application/`.
+2. Router/task **delgado** (auth, validar, llamar UC).
+3. I/O externo nuevo → **port** + **adapter** (o justificación de legado).
+4. Test de UC / mock de port si la lógica no es trivial.
+5. Sin reglas de producto nuevas en `api/` ni `modules/fire/` (salvo mecánica de pipeline).
+
+## Hexagonal ya cableado (ejemplos)
 
 ### FIRMS live
 
@@ -47,7 +73,7 @@ app/
 - F0: `ADMIN_EMAILS`, OTP SMTP o `OTP_SIMULATE`, `SECRET_KEY` en CI.
 - F1: sin session/events `bioagromap_*`; sin `logo-bioagro` / Mapbox token;
   `ai_service` solo con `--profile ai`; volumen Postgres legacy documentado
-  en [`docs/ops/legacy_names.md`](ops/legacy_names.md).
+  en [`ops/legacy_names.md`](ops/legacy_names.md).
 - F5: `App.jsx` orquesta; lógica en hooks:
   - `hooks/useAuthSession.js` — login/OTP/logout/restore
   - `hooks/useFireMap.js` — lazy layers Fire + toggles
@@ -103,8 +129,8 @@ El volumen Docker de Postgres conserva el nombre legacy `bioagromap_postgres_dat
 ## Base de datos (F3 bootstrap)
 
 - Cold start: `infrastructure/postgres/init.sql` (incluye `projects.module` + `fire_orders`).
-- Siempre: `alembic upgrade head` — ver [`docs/ops/bootstrap.md`](ops/bootstrap.md).
-- Storage espacial: híbrido JSON/disco + PostGIS para vectores de mapa — [`docs/ops/adr-001-storage-hybrid.md`](ops/adr-001-storage-hybrid.md).
+- Siempre: `alembic upgrade head` — ver [`ops/bootstrap.md`](ops/bootstrap.md).
+- Storage espacial: híbrido JSON/disco + PostGIS para vectores de mapa — [`ops/adr-001-storage-hybrid.md`](ops/adr-001-storage-hybrid.md).
 
 ## Thin routers (F2)
 
@@ -122,10 +148,10 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 ## Calidad (F7)
 
 - CI: `.github/workflows/ci.yml` — ruff, pytest, eslint (núcleo mapa), vite build, docs-check.
-- Guía: [`docs/ops/quality.md`](ops/quality.md).
+- Guía: [`ops/quality.md`](ops/quality.md).
 - Métricas: `GET /metrics` (HTTP + FIRMS cache + Celery enqueue) y worker `:9101` (duración/estado Celery); scrape en `infrastructure/prometheus.yml`.
 
-## Roadmap de fases (audit)
+## Roadmap de fases (audit F0–F7)
 
 | Fase | Estado |
 |------|--------|
@@ -137,19 +163,27 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 | F6 GIS LayerStore/COG/FIRMS | Hecho |
 | F7 Calidad CI/lint/métricas/docs | Hecho (ESLint `src/` + cov `application/` ≥15%) |
 
-## Siguiente (post-F7)
+## Roadmap hexagonal / modular (H0–B1)
+
+| Fase | Estado |
+|------|--------|
+| **H0** Gobierno ADR-002 + DoD + owners | **Hecho** |
+| **H1** Modular A (routers/FE legibles) | **Hecho** |
+| H2 Clean-lite dominio authz/estados | Pendiente |
+| H3 Puertos núcleo (Repo, Storage, JobQueue, Tiles) | Pendiente |
+| H4 Adelgazar pipelines/GIS | Pendiente |
+| H5 Hex total en monolito (+ API/worker images) | Pendiente |
+| B1 Extractable (contratos; solo con trigger) | Pendiente |
+
+### Post-F7 residual (calidad)
 
 1. `ruff format --check` en todo `app/`
 2. Subir umbral coverage `application/` (hoy ≥15%) y cubrir S1/PS inventarios
 3. Bajar `max-warnings` ESLint hacia 0
-4. ~~MVT/PostGIS para vectores publicados (ADR híbrido)~~ — hecho (`layer_mvt` + tiles MapLibre)
-5. ~~Imagen Docker prebuilt (no pip/npm en cada up)~~ — hecho (`docs/ops/docker.md`)
-6. Dashboards Grafana (FIRMS hit-rate / Celery p95)
-7. ~~Acotar middleware GET `/raster`~~ — hecho (allowlist list+preview; `permissions_cliente.md`)
+4. Dashboards Grafana (FIRMS hit-rate / Celery p95)
 
 ### Vectores publicados (MVT)
 
 - Upload / `POST .../sync-geom` escribe `layers.geom` (EPSG:4326).
 - `GET /api/v1/layers/{project_id}/{layer_id}/tiles/{z}/{x}/{y}.mvt` — `ST_AsMVT`, source-layer `published`.
 - Catálogo `GET /layers/{project_id}` incluye `mvt_ready` + `bbox`; el mapa Agro usa tiles si están listos, GeoJSON si no.
-

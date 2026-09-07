@@ -85,8 +85,11 @@ Ops relacionados:
 - [`bootstrap.md`](bootstrap.md) — init + Alembic
 - [`docker.md`](docker.md) — imágenes prebuilt (sin pip/npm en cada up)
 - [`adr-001-storage-hybrid.md`](adr-001-storage-hybrid.md) — PostGIS vs disco/COG
+- [`adr-002-hexagonal-modular.md`](adr-002-hexagonal-modular.md) — Hexagonal-first + Clean-lite (H0)
+- [`module_owners.md`](module_owners.md) — owners Identity / Agro / Fire / Shared GIS
 - [`legacy_names.md`](legacy_names.md) — volumen Postgres legacy
 - [`permissions_cliente.md`](permissions_cliente.md) — matriz cliente/admin
+- [`hexagonal_modular_roadmap_checkpoint_2026-09-06.md`](hexagonal_modular_roadmap_checkpoint_2026-09-06.md) — fases H0→B1
 
 ## Ampliaciones futuras (fuera del gate actual)
 

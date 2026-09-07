@@ -120,6 +120,8 @@ jobs:
             docs/ops/bootstrap.md \
             docs/ops/docker.md \
             docs/ops/adr-001-storage-hybrid.md \
+            docs/ops/adr-002-hexagonal-modular.md \
+            docs/ops/module_owners.md \
             docs/ops/quality.md \
             docs/ops/legacy_names.md \
             docs/ops/permissions_cliente.md \
@@ -128,7 +130,9 @@ jobs:
             test -s "$f" || { echo "missing or empty: $f"; exit 1; }
           done
           grep -q "F7 Calidad" docs/architecture.md
+          grep -q "ADR-002" docs/architecture.md
           grep -q "/metrics" docs/ops/quality.md
           grep -q "require_project_dashboard_access" docs/ops/permissions_cliente.md
           grep -q "xeniamap-backend:local" docs/ops/docker.md
+          grep -q "Clean-lite" docs/ops/adr-002-hexagonal-modular.md
           echo "docs-check OK"

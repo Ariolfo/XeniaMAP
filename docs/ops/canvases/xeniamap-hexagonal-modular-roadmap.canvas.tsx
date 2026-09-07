@@ -75,7 +75,7 @@ const PHASES: Phase[] = [
     id: "H0",
     track: "Gobierno",
     title: "Congelar reglas Hexagonal-first + Clean-lite",
-    goal: "A",
+    goal: "A ✓",
     weeks: "3–5 días",
     outcomes: [
       "ADR-002: Hexagonal-first, Clean-lite, Modular A ahora / B después",
@@ -84,7 +84,7 @@ const PHASES: Phase[] = [
       "DoD por feature: UC + test; puerto si hay I/O externo (sin presenters GIS)",
     ],
     fat: ["Ninguno — solo gobierno"],
-    exit: "ADR + checklist en docs/architecture.md; equipo alineado",
+    exit: "Hecho 2026-09-07 — ADR-002 + architecture DoD + module_owners",
   },
   {
     id: "H1",
@@ -106,7 +106,7 @@ const PHASES: Phase[] = [
       "PreprocessPanel ~1640",
       "App.jsx ~854",
     ],
-    exit: "Routers nuevos/refactors < ~400 LOC o partidos; inventarios solo vía UC",
+    exit: "Hecho 2026-09-07 — landing UC + rasters map/admin + FE features barrels",
   },
   {
     id: "H2",
@@ -224,31 +224,34 @@ const TODO_H0 = [
   {
     id: "1",
     content: "Redactar ADR-002 Hexagonal-first + Clean-lite + Modular A/B",
-    status: "pending" as const,
+    status: "completed" as const,
   },
   {
     id: "2",
     content: "Actualizar docs/architecture.md con DoD y regla de imports",
-    status: "pending" as const,
+    status: "completed" as const,
   },
   {
     id: "3",
     content: "Inventario owners Identity / Agro / Fire / Shared GIS",
-    status: "pending" as const,
+    status: "completed" as const,
+  },
+];
+
+const TODO_H1 = [
+  {
+    id: "a",
+    content: "H1: landing markdown → application UC + thin preprocess",
+    status: "completed" as const,
+  },
+  {
+    id: "b",
+    content: "H1: rasters mapa vs browse/admin + FE features barrels",
+    status: "completed" as const,
   },
 ];
 
 const TODO_NEAR = [
-  {
-    id: "a",
-    content: "H1: vaciar preprocess residual + partir rasters admin vs map",
-    status: "pending" as const,
-  },
-  {
-    id: "b",
-    content: "H1: features FE agro/fire/auth (mover carpetas)",
-    status: "pending" as const,
-  },
   {
     id: "c",
     content: "H2: domain policies authz (publicado / share / fire own)",
@@ -436,13 +439,13 @@ export default function XeniaMapHexagonalModularRoadmap() {
 
       <Grid columns={2} gap={16}>
         <Card>
-          <CardHeader>Arranque H0</CardHeader>
+          <CardHeader>H0 + H1 hechos</CardHeader>
           <CardBody>
-            <TodoList todos={TODO_H0} />
+            <TodoList todos={[...TODO_H0, ...TODO_H1]} />
           </CardBody>
         </Card>
         <Card>
-          <CardHeader>Próximos sprints (H1–H4)</CardHeader>
+          <CardHeader>Próximos sprints (H2–H4)</CardHeader>
           <CardBody>
             <TodoList todos={TODO_NEAR} />
           </CardBody>

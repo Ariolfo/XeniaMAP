@@ -1,26 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api, { setAuthToken } from "./api";
-import useMapLayers from "./hooks/useMapLayers";
-import usePaintLayerOnMap from "./hooks/usePaintLayerOnMap";
-import useFireMap from "./hooks/useFireMap";
-import useAuthSession from "./hooks/useAuthSession";
-import useProjectWorkspace from "./hooks/useProjectWorkspace";
-import usePreprocessJobs from "./hooks/usePreprocessJobs";
+import { useAuthSession } from "./features/auth";
 import {
-  kmlToGeojson,
-  kmzToGeojson,
+  useProjectWorkspace,
+  usePreprocessJobs,
+  INDEX_CATALOG,
+  INDEX_CATALOG_PS,
+} from "./features/agro";
+import { useFireMap, FirePanel } from "./features/fire";
+import {
+  useMapLayers,
+  usePaintLayerOnMap,
+  MapView,
+  MapErrorBoundary,
+  MapLayersPanel,
   bboxFromGeojson,
   bboxFromBoundsWgs84,
-} from "./utils/geo";
+} from "./shared/map";
+import { kmlToGeojson, kmzToGeojson } from "./utils/geo";
 import Sidebar from "./components/Sidebar";
-import MapView from "./components/MapView";
-import MapErrorBoundary from "./components/MapErrorBoundary";
-import MapLayersPanel from "./components/MapLayersPanel";
 import DomainMenu, { DOMAIN_OPTIONS } from "./components/DomainMenu";
 import IngresoPanel from "./components/IngresoPanel";
 import BrandHeader from "./components/BrandHeader";
-import FirePanel from "./components/fire/FirePanel";
 import AdvancedDashboard from "./components/dashboard/AdvancedDashboard";
 import SmartClusterModal from "./components/dashboard/SmartClusterModal";
 import SmartSoilModal from "./components/dashboard/SmartSoilModal";
@@ -30,7 +32,6 @@ import StudyRequestModal from "./components/StudyRequestModal";
 import AdminStudyOrdersModal from "./components/AdminStudyOrdersModal";
 import ShareProjectModal from "./components/ShareProjectModal";
 import ClientVisualizationModal from "./components/ClientVisualizationModal";
-import { INDEX_CATALOG, INDEX_CATALOG_PS } from "./components/PreprocessPanel";
 
 const INDEX_IDS_S2 = new Set(
   INDEX_CATALOG.filter((o) => o.id !== "TODOS").map((o) => o.id)
