@@ -18,9 +18,11 @@ from app.application.fire.orders import (
     EnqueueFireValidateFirms,
     GetFirePipelineStatus,
     celery_task_meta,
+    fire_orders_repo,
     normalize_geometry,
     parse_iso_date,
     project_name,
+    projects_repo,
     require_fire_order_access,
     require_fire_order_admin,
 )
@@ -40,11 +42,11 @@ from app.infrastructure.firms.live_cache import (
 )
 from app.infrastructure.firms.nasa_firms_adapter import NasaFirmsAreaAdapter
 from app.models.models import FireOrder, User
-from app.modules.fire.project_link import (
-    ensure_fire_order_project,
-    materialize_fire_projects_for_applicant,
+from app.application.fire.project_link import (
+    EnsureFireOrderProject,
+    MaterializeFireProjectsForApplicant,
 )
-from app.modules.fire.seed import seed_tolima_fire_orders
+from app.application.fire.seed import SeedTolimaFireOrders
 from app.schemas.schemas import (
     FireOrderCreate,
     FireOrderDetail,
@@ -84,7 +86,7 @@ def _summary(order: FireOrder, db: Session | None = None) -> FireOrderSummary:
         created_at=order.created_at.isoformat() if order.created_at else "",
         source_key=order.source_key,
         project_id=getattr(order, "project_id", None),
-        project_name=project_name(db, order) if db is not None else None,
+        project_name=project_name(order, projects=projects_repo(db)) if db is not None else None,
     )
 
 
@@ -119,7 +121,7 @@ def _detail(order: FireOrder, db: Session | None = None) -> FireOrderDetail:
         extra_notes=order.extra_notes,
         created_at=order.created_at.isoformat() if order.created_at else "",
         project_id=getattr(order, "project_id", None),
-        project_name=project_name(db, order) if db is not None else None,
+        project_name=project_name(order, projects=projects_repo(db)) if db is not None else None,
     )
 
 
@@ -131,13 +133,13 @@ def seed_tolima(
 ):
     """Precarga solicitudes desde Incendios_Tolima.shp."""
     try:
-        result = seed_tolima_fire_orders(
+        result = SeedTolimaFireOrders().execute(
             db,
             admin,
             applicant_email=(applicant_email or "").strip() or None,
         )
         if applicant_email:
-            linked = materialize_fire_projects_for_applicant(
+            linked = MaterializeFireProjectsForApplicant().execute(
                 db, applicant_email=applicant_email.strip()
             )
             result["projects"] = linked
@@ -156,7 +158,9 @@ def materialize_projects(
     db: Session = Depends(get_db),
 ):
     try:
-        return materialize_fire_projects_for_applicant(db, applicant_email=applicant_email)
+        return MaterializeFireProjectsForApplicant().execute(
+            db, applicant_email=applicant_email
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -224,7 +228,7 @@ def create_fire_order(
     db.add(order)
     db.flush()
     if applicant is not None:
-        ensure_fire_order_project(db, order, applicant)
+        EnsureFireOrderProject().execute(db, order, applicant)
     db.commit()
     db.refresh(order)
     return _detail(order, db)
@@ -233,7 +237,7 @@ def create_fire_order(
 @router.get("/{order_id}", response_model=FireOrderDetail)
 def get_fire_order(order_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        order = require_fire_order_access(order_id, user, db)
+        order = require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
     except LookupError as exc:
         raise _http_from_app(exc) from exc
     return _detail(order, db)
@@ -247,10 +251,16 @@ def patch_fire_order(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_admin(order_id, admin, db)
+        order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
     except LookupError as exc:
         raise _http_from_app(exc) from exc
-    order.status = payload.status
+    from app.domain.errors import InvalidStatusError
+    from app.domain.fire.order_status import assert_fire_order_transition
+
+    try:
+        order.status = assert_fire_order_transition(order.status, payload.status, mode="admin")
+    except InvalidStatusError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
     db.commit()
     db.refresh(order)
     return _detail(order, db)
@@ -264,7 +274,7 @@ def start_fire_download(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_admin(order_id, admin, db)
+        order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
         body = payload or FireOrderDownloadRequest()
         out = EnqueueFireDownloadS2().execute(
             order=order,
@@ -287,7 +297,7 @@ def fire_download_status(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_admin(order_id, admin, db)
+        order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
     except LookupError as exc:
         raise _http_from_app(exc) from exc
     return {"order": _detail(order, db), "task": celery_task_meta(order.download_task_id)}
@@ -300,7 +310,7 @@ def start_fire_process_dnbr(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_admin(order_id, admin, db)
+        order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
         out = EnqueueFireProcessDnbr().execute(order=order, db=db)
     except (LookupError, ValueError) as exc:
         raise _http_from_app(exc) from exc
@@ -315,7 +325,7 @@ def start_fire_validate_firms(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_admin(order_id, admin, db)
+        order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
         body = payload or FireOrderFirmsRequest()
         out = EnqueueFireValidateFirms().execute(
             order=order, db=db, fire_start=body.fire_start, fire_end=body.fire_end
@@ -338,7 +348,7 @@ def fire_pipeline_status(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_access(order_id, user, db)
+        order = require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
     except LookupError as exc:
         raise _http_from_app(exc) from exc
     tasks = GetFirePipelineStatus().execute(order=order)
@@ -352,7 +362,7 @@ def list_fire_results(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_access(order_id, user, db)
+        order = require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
         return ListFireResultLayers().execute(
             order_id=order.id, request_name=order.request_name
         )
@@ -367,7 +377,7 @@ def fire_result_stats(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_access(order_id, user, db)
+        order = require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
         return FireResultStats().execute(order_id=order.id, request_name=order.request_name)
     except LookupError as exc:
         raise _http_from_app(exc) from exc
@@ -381,7 +391,7 @@ def fire_firms_live(
     db: Session = Depends(get_db),
 ):
     try:
-        order = require_fire_order_access(order_id, user, db)
+        order = require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
     except LookupError as exc:
         raise _http_from_app(exc) from exc
     if hours not in (24, 48):
@@ -457,7 +467,7 @@ def fire_result_geojson(
     db: Session = Depends(get_db),
 ):
     try:
-        require_fire_order_access(order_id, user, db)
+        require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
         return FireResultGeojson().execute(order_id=order_id, filename=name)
     except LookupError as exc:
         raise _http_from_app(exc) from exc
@@ -485,7 +495,7 @@ def fire_result_preview(
     db: Session = Depends(get_db),
 ):
     try:
-        require_fire_order_access(order_id, user, db)
+        require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
         kind, payload = FireResultPreview().execute(
             order_id=order_id,
             filename=name,
@@ -527,7 +537,7 @@ def fire_result_xyz_tile(
     db: Session = Depends(get_db),
 ):
     try:
-        require_fire_order_access(order_id, user, db)
+        require_fire_order_access(order_id, user, fire_orders=fire_orders_repo(db))
         png = FireResultXyzTile().execute(
             order_id=order_id,
             filename=name,

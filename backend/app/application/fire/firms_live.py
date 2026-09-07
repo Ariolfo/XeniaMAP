@@ -61,16 +61,28 @@ def _empty_fc() -> dict:
 
 
 def split_hotspots_by_age(
-    df: pd.DataFrame,
+    records,
     aoi_projected: gpd.GeoDataFrame,
     *,
     as_of: datetime,
     hours: int,
 ) -> tuple[dict, dict, int, int]:
-    """Separa detecciones en buckets 24h y 24–48h."""
+    """Separa detecciones en buckets 24h y 24–48h.
+
+    ``records``: ``Sequence[Mapping]`` (DTO de puerto) o DataFrame legado.
+    """
     fc_24 = _empty_fc()
     fc_48 = _empty_fc()
-    if df is None or df.empty:
+    if records is None:
+        return fc_24, fc_48, 0, 0
+    if isinstance(records, pd.DataFrame):
+        df = records
+    else:
+        rows = list(records)
+        if not rows:
+            return fc_24, fc_48, 0, 0
+        df = pd.DataFrame(rows)
+    if df.empty:
         return fc_24, fc_48, 0, 0
 
     geometry = gpd.points_from_xy(df["longitude"], df["latitude"])

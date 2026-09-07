@@ -24,7 +24,7 @@ docker compose exec backend alembic upgrade head
 ```
 
 1. Postgres runs `init.sql` once on first boot of an empty volume.
-2. Backend runs **`alembic upgrade head`** (deps already in image `xeniamap-backend:local` — see [`docker.md`](docker.md)).
+2. Backend runs **`alembic upgrade head`** (deps already in image `xeniamap-api:local` — see [`docker.md`](docker.md)).
 
 ### Docker (existing volume)
 

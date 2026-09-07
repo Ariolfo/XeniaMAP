@@ -22,7 +22,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: xeniamap-backend:local
+    image: xeniamap-api:local
     working_dir: /app
     volumes:
       - ./backend:/app
@@ -68,8 +68,8 @@ services:
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    image: xeniamap-backend:local
+      dockerfile: Dockerfile.worker
+    image: xeniamap-worker:local
     working_dir: /app
     volumes:
       - ./backend:/app

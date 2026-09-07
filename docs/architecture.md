@@ -42,6 +42,29 @@ Detalle y DoD de PR: **ADR-002**.
 
 ## Hexagonal ya cableado (ejemplos)
 
+### Dominio mínimo authz / estados (H2)
+
+1. `domain/identity/policies.py` — publicado, ownership/share, delete, fire access  
+2. `domain/agro/{project,study_order}_status.py` — vocabulario + transiciones + efectos  
+3. `domain/fire/order_status.py` — estados Fire + pipeline vs admin  
+4. `api/deps.py` / patch status / enqueue Fire — solo glue; tests en `tests/test_domain_policies_h2.py`
+
+### Puertos núcleo (H3)
+
+1. `domain/shared/ports.py` — `ProjectRepository`, `RasterStoragePort`, `JobQueuePort`, `TileRenderPort`, `MailPort` (+ CDSE)  
+2. Adapters en `infrastructure/{persistence,storage,jobs,mail,raster}/`  
+3. `infrastructure/composition.py` — defaults; UC aceptan inyección  
+4. Pilotos: landing MD, S2 download, Fire enqueue/tiles, MVT, notify mail  
+5. Tests con mocks: `tests/test_h3_core_ports.py`
+
+### Pipelines detrás de application (H4)
+
+1. `application/fire/pipeline_jobs.py` — worker Fire (download/dNBR/FIRMS); `tasks/fire_jobs.py` solo dispatch  
+2. Wrappers: `validate_firms`, `aoi`, `project_link`, `seed` — **api sin `modules.fire`**  
+3. Agro pilotos: `RunSentinel2DownloadJob`, `RunLandingMarkdownJob`  
+4. `modules.fire.process_dnbr` permanece (algoritmo); entrada única = UC  
+5. Tests: `tests/test_h4_fire_pipelines.py`
+
 ### FIRMS live
 
 1. `domain/fire/ports.py` → `FirmsHotspotPort`
@@ -161,7 +184,7 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 | F3 Bootstrap BD | Hecho |
 | F5 Frontend hooks | Hecho |
 | F6 GIS LayerStore/COG/FIRMS | Hecho |
-| F7 Calidad CI/lint/métricas/docs | Hecho (ESLint `src/` + cov `application/` ≥15%) |
+| F7 Calidad CI/lint/métricas/docs | Hecho (ESLint `src/` + cov `application/` ≥18% + import-linter) |
 
 ## Roadmap hexagonal / modular (H0–B1)
 
@@ -169,18 +192,20 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 |------|--------|
 | **H0** Gobierno ADR-002 + DoD + owners | **Hecho** |
 | **H1** Modular A (routers/FE legibles) | **Hecho** |
-| H2 Clean-lite dominio authz/estados | Pendiente |
-| H3 Puertos núcleo (Repo, Storage, JobQueue, Tiles) | Pendiente |
-| H4 Adelgazar pipelines/GIS | Pendiente |
-| H5 Hex total en monolito (+ API/worker images) | Pendiente |
+| **H2** Clean-lite dominio authz/estados | **Hecho** |
+| **H3** Puertos núcleo (Repo, Storage, JobQueue, Tiles) | **Hecho** |
+| **H4** Adelgazar pipelines/GIS | **Hecho** |
+| **H5** Hex total en monolito (+ API/worker images) | **Hecho** (piloto Session→repos; deps API/worker aún compartidas) |
 | B1 Extractable (contratos; solo con trigger) | Pendiente |
 
-### Post-F7 residual (calidad)
+### Post-H5 residual (calidad / deuda)
 
 1. `ruff format --check` en todo `app/`
-2. Subir umbral coverage `application/` (hoy ≥15%) y cubrir S1/PS inventarios
+2. Subir umbral coverage `application/` (hoy ≥18%; meta 25%+) y cubrir inventarios S1/PS
 3. Bajar `max-warnings` ESLint hacia 0
 4. Dashboards Grafana (FIRMS hit-rate / Celery p95)
+5. Migrar UC residuales que aún reciben `Session` → `UnitOfWork` / repos (piloto Fire acceso ya en H5)
+6. Separar deps reales en `requirements-api.txt` vs `requirements-worker.txt` (hoy ambos `-r requirements.txt`)
 
 ### Vectores publicados (MVT)
 

@@ -12,7 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.application.fire.results import fire_results_root, fire_storage_root
 from app.core.config import settings
-from app.models.models import FireOrder, Project, User
+from app.domain.fire.repositories import FireOrderRepository
+from app.domain.shared.ports import JobQueuePort, ProjectRepository
+from app.infrastructure.composition import default_job_queue
+from app.infrastructure.persistence.sqlalchemy_project_repository import (
+    SqlAlchemyProjectRepository,
+)
+from app.infrastructure.persistence.sqlalchemy_uow import SqlAlchemyFireOrderRepository
+from app.models.models import FireOrder, User
 
 logger = logging.getLogger(__name__)
 
@@ -58,39 +65,63 @@ def normalize_geometry(raw: dict) -> dict:
     return json.loads(gdf.to_json())
 
 
-def project_name(db: Session, order: FireOrder) -> str | None:
+def project_name(
+    order: FireOrder,
+    *,
+    projects: ProjectRepository,
+) -> str | None:
     if not order.project_id:
         return None
-    p = db.query(Project).filter(Project.id == order.project_id).first()
-    return p.name if p else None
+    return projects.get_name(int(order.project_id))
 
 
-def require_fire_order_access(order_id: int, user: User, db: Session) -> FireOrder:
+def require_fire_order_access(
+    order_id: int,
+    user: User,
+    *,
+    fire_orders: FireOrderRepository,
+) -> FireOrder:
     """Admin: mismo tenant. Cliente: applicant_email o created_by. Raises LookupError."""
-    order = db.query(FireOrder).filter(FireOrder.id == order_id).first()
+    from app.domain.errors import AuthorizationError
+    from app.domain.identity.policies import assert_can_access_fire_order
+
+    order = fire_orders.get_by_id(order_id)
     if not order:
         raise LookupError("Solicitud Fire no encontrada")
-    role = str(user.role or "").lower()
-    if role == "admin":
-        if order.tenant_id != user.tenant_id:
-            raise LookupError("Solicitud Fire no encontrada")
-    else:
-        email = str(user.email or "").strip().lower()
-        order_email = str(order.applicant_email or "").strip().lower()
-        if order_email != email and order.created_by_user_id != user.id:
-            raise LookupError("Solicitud Fire no encontrada")
+    try:
+        assert_can_access_fire_order(
+            role=user.role,
+            user_id=int(user.id),
+            user_email=getattr(user, "email", None),
+            user_tenant_id=int(user.tenant_id),
+            order_tenant_id=int(order.tenant_id),
+            applicant_email=getattr(order, "applicant_email", None),
+            created_by_user_id=getattr(order, "created_by_user_id", None),
+        )
+    except AuthorizationError as exc:
+        raise LookupError(exc.message) from exc
     return order
 
 
-def require_fire_order_admin(order_id: int, admin: User, db: Session) -> FireOrder:
-    order = (
-        db.query(FireOrder)
-        .filter(FireOrder.id == order_id, FireOrder.tenant_id == admin.tenant_id)
-        .first()
-    )
+def require_fire_order_admin(
+    order_id: int,
+    admin: User,
+    *,
+    fire_orders: FireOrderRepository,
+) -> FireOrder:
+    order = fire_orders.get_by_id_for_tenant(order_id, tenant_id=int(admin.tenant_id))
     if not order:
         raise LookupError("Solicitud Fire no encontrada")
     return order
+
+
+def fire_orders_repo(db: Session) -> FireOrderRepository:
+    """Glue delivery→repo (API/tasks). Prefer ``SqlAlchemyUnitOfWork`` en código nuevo."""
+    return SqlAlchemyFireOrderRepository(db)
+
+
+def projects_repo(db: Session) -> ProjectRepository:
+    return SqlAlchemyProjectRepository(db)
 
 
 def celery_task_meta(task_id: str | None) -> dict[str, Any] | None:
@@ -110,6 +141,9 @@ def celery_task_meta(task_id: str | None) -> dict[str, Any] | None:
 
 
 class EnqueueFireDownloadS2:
+    def __init__(self, jobs: JobQueuePort | None = None) -> None:
+        self._jobs = jobs or default_job_queue()
+
     def execute(
         self,
         *,
@@ -141,57 +175,71 @@ class EnqueueFireDownloadS2:
 
         data_root = fire_storage_root(order.id)
         order.data_root = str(data_root)
-        order.status = "en_descarga"
+        from app.domain.fire.order_status import FIRE_STATUS_EN_DESCARGA, assert_fire_order_transition
+
+        order.status = assert_fire_order_transition(
+            order.status, FIRE_STATUS_EN_DESCARGA, mode="pipeline"
+        )
         order.download_message = "Encolando descarga Sentinel-2..."
         order.download_manifest = None
         db.commit()
 
-        from app.core.celery_task_registry import register_celery_task
         from app.tasks.fire_jobs import fire_download_s2
 
-        async_result = fire_download_s2.delay(order.id, settings.database_url)
-        order.download_task_id = async_result.id
-        order.download_message = f"Descarga iniciada (task {async_result.id})"
-        db.commit()
-        register_celery_task(
-            async_result.id,
+        task_id = self._jobs.enqueue(
+            fire_download_s2,
+            order.id,
+            settings.database_url,
             tenant_id=int(order.tenant_id),
             project_id=None,
             task_name="fire_download_s2",
         )
+        order.download_task_id = task_id
+        order.download_message = f"Descarga iniciada (task {task_id})"
+        db.commit()
         db.refresh(order)
-        return {"ok": True, "task_id": async_result.id, "order": order}
+        return {"ok": True, "task_id": task_id, "order": order}
 
 
 class EnqueueFireProcessDnbr:
+    def __init__(self, jobs: JobQueuePort | None = None) -> None:
+        self._jobs = jobs or default_job_queue()
+
     def execute(self, *, order: FireOrder, db: Session) -> dict[str, Any]:
         if not order.data_root:
             raise ValueError("Primero debe descargar Sentinel-2 (paso 01) para esta solicitud.")
         results_root = fire_results_root(order.id)
         order.results_root = str(results_root)
-        order.status = "procesando"
+        from app.domain.fire.order_status import FIRE_STATUS_PROCESANDO, assert_fire_order_transition
+
+        order.status = assert_fire_order_transition(
+            order.status, FIRE_STATUS_PROCESANDO, mode="pipeline"
+        )
         order.process_message = "Encolando procesamiento dNBR..."
         order.process_manifest = None
         db.commit()
 
-        from app.core.celery_task_registry import register_celery_task
         from app.tasks.fire_jobs import fire_process_dnbr
 
-        async_result = fire_process_dnbr.delay(order.id, settings.database_url)
-        order.process_task_id = async_result.id
-        order.process_message = f"Procesamiento dNBR iniciado (task {async_result.id})"
-        db.commit()
-        register_celery_task(
-            async_result.id,
+        task_id = self._jobs.enqueue(
+            fire_process_dnbr,
+            order.id,
+            settings.database_url,
             tenant_id=int(order.tenant_id),
             project_id=None,
             task_name="fire_process_dnbr",
         )
+        order.process_task_id = task_id
+        order.process_message = f"Procesamiento dNBR iniciado (task {task_id})"
+        db.commit()
         db.refresh(order)
-        return {"ok": True, "task_id": async_result.id, "order": order}
+        return {"ok": True, "task_id": task_id, "order": order}
 
 
 class EnqueueFireValidateFirms:
+    def __init__(self, jobs: JobQueuePort | None = None) -> None:
+        self._jobs = jobs or default_job_queue()
+
     def execute(
         self,
         *,
@@ -207,30 +255,34 @@ class EnqueueFireValidateFirms:
         )
         end = fire_end or order.post_end.isoformat()
 
-        order.status = "validando"
+        from app.domain.fire.order_status import FIRE_STATUS_VALIDANDO, assert_fire_order_transition
+
+        order.status = assert_fire_order_transition(
+            order.status, FIRE_STATUS_VALIDANDO, mode="pipeline"
+        )
         order.firms_message = "Encolando validación FIRMS..."
         order.firms_manifest = None
         db.commit()
 
-        from app.core.celery_task_registry import register_celery_task
         from app.tasks.fire_jobs import fire_validate_firms
 
-        async_result = fire_validate_firms.delay(
-            order.id, settings.database_url, start, end
-        )
-        order.firms_task_id = async_result.id
-        order.firms_message = f"Validación FIRMS iniciada (task {async_result.id})"
-        db.commit()
-        register_celery_task(
-            async_result.id,
+        task_id = self._jobs.enqueue(
+            fire_validate_firms,
+            order.id,
+            settings.database_url,
+            start,
+            end,
             tenant_id=int(order.tenant_id),
             project_id=None,
             task_name="fire_validate_firms",
         )
+        order.firms_task_id = task_id
+        order.firms_message = f"Validación FIRMS iniciada (task {task_id})"
+        db.commit()
         db.refresh(order)
         return {
             "ok": True,
-            "task_id": async_result.id,
+            "task_id": task_id,
             "fire_start": start,
             "fire_end": end,
             "order": order,

@@ -22,6 +22,9 @@ jobs:
       - name: Ruff check
         working-directory: backend
         run: ruff check app tests
+      - name: Import linter (hexagonal contracts)
+        working-directory: backend
+        run: lint-imports
 
   backend-tests:
     runs-on: ubuntu-latest
@@ -76,7 +79,7 @@ jobs:
           --cov=app.application
           --cov-config=.coveragerc
           --cov-report=term-missing:skip-covered
-          --cov-fail-under=15
+          --cov-fail-under=18
 
   frontend-lint:
     runs-on: ubuntu-latest
@@ -133,6 +136,8 @@ jobs:
           grep -q "ADR-002" docs/architecture.md
           grep -q "/metrics" docs/ops/quality.md
           grep -q "require_project_dashboard_access" docs/ops/permissions_cliente.md
-          grep -q "xeniamap-backend:local" docs/ops/docker.md
+          grep -q "xeniamap-api:local" docs/ops/docker.md
+          grep -q "xeniamap-worker:local" docs/ops/docker.md
+          grep -q "Dockerfile.worker" docs/ops/docker.md
           grep -q "Clean-lite" docs/ops/adr-002-hexagonal-modular.md
           echo "docs-check OK"

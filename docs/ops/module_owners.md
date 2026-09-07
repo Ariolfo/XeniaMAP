@@ -9,10 +9,10 @@ Owners below are **code ownership for PRs and triage**, not org titles. Until na
 
 | Context | Backend (primary) | Frontend (primary) | Celery / jobs | Notes |
 |---------|-------------------|--------------------|---------------|--------|
-| **Identity** | `api/v1/auth.py`, `api/deps.py`, `core/security.py`, `core/otp_store.py`, `core/mail.py`, middleware allowlist in `main.py` | `features/auth`, `hooks/useAuthSession.js`, `components/AuthPanel.jsx` | — | Authz policies → move to `domain/identity` in **H2** |
-| **Agro** | `application/agro/*` (incl. `landing_markdown`), `api/v1/preprocess.py`, `rasters.py` (mapa), `rasters_admin.py` (browse/import), `soilplus.py`, `layers.py` (MVT), `projects.py` / `study_orders.py` | `features/agro`, hooks preprocess/workspace, `PreprocessPanel.jsx` | `tasks/jobs.py` (Agro tasks) | SoilPlus still fat; preprocess.py aún gordo |
-| **Fire** | `application/fire/*`, `api/v1/fire_orders.py`, `modules/fire/*` (pipelines only) | `features/fire`, `hooks/useFireMap.js`, `components/fire/*` | `tasks/fire_jobs.py` (`tasks.fire_*` names stable) | Heavy logic in `modules/fire/process_dnbr.py` etc. |
-| **Shared GIS** | `services/*` (raster, sentinel, clip, clustering algorithms), `infrastructure/raster/*`, `infrastructure/cdse/*`, `infrastructure/firms/*` | `shared/map`, `map/LayerStore.js`, paint/map hooks | Shared by Agro/Fire workers | Algorithms stay in `services/`; I/O adapters in `infrastructure/` |
+| **Identity** | `domain/identity/*`, `api/v1/auth.py`, `api/deps.py` (glue), `core/security.py`, OTP/mail | `features/auth`, `hooks/useAuthSession.js`, `components/AuthPanel.jsx` | — | Políticas authz en dominio (H2); deps solo HTTP/DB |
+| **Agro** | `domain/agro/*` (estados Project/StudyOrder), `application/agro/*`, `api/v1/preprocess.py`, `rasters.py` / `rasters_admin.py`, `soilplus.py`, `layers.py`, `projects.py` / `study_orders.py` | `features/agro`, hooks preprocess/workspace, `PreprocessPanel.jsx` | `tasks/jobs.py` (Agro tasks) | SoilPlus still fat; preprocess.py aún gordo |
+| **Fire** | `domain/fire/*`, `application/fire/*` (incl. `pipeline_jobs`), `api/v1/fire_orders.py` (sin modules), `modules/fire/*` (pipelines only) | `features/fire`, `hooks/useFireMap.js`, `components/fire/*` | `tasks/fire_jobs.py` (dispatch → UC; names `tasks.fire_*` stable) | dNBR/FIRMS viven en modules; entrada solo application |
+| **Shared GIS** | `domain/shared/ports.py` (JobQueue/Storage/Tiles/Mail/Repo), `services/*` (algoritmos), `infrastructure/*` | `shared/map`, `map/LayerStore.js`, paint/map hooks | Shared by Agro/Fire workers | H3: I/O vía ports; algoritmos en `services/` |
 
 ## Cross-cutting (not a BC)
 

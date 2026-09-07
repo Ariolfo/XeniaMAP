@@ -7,7 +7,7 @@ Workflow: [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
 | Job | Qué hace |
 |-----|----------|
 | `backend-lint` | `ruff check app tests` |
-| `backend-tests` | PostGIS + `init.sql` + Alembic + `pytest` con **coverage `app.application` ≥ 15%** |
+| `backend-tests` | PostGIS + `init.sql` + Alembic + `pytest` con **coverage `app.application` ≥ 18%** |
 | `frontend-lint` | ESLint de todo `src/**/*.{js,jsx}` (`--max-warnings 50`) |
 | `frontend-build` | `npm ci && npm run build` |
 | `docs-check` | Docs obligatorias + menciones F7 /metrics |
@@ -22,7 +22,8 @@ cd backend
 pip install -r requirements.txt -r requirements-dev.txt
 export SECRET_KEY=dev-local-xeniamap-change-me OTP_SIMULATE=1
 ruff check app tests
-pytest -q --cov=app.application --cov-config=.coveragerc --cov-fail-under=15
+lint-imports
+pytest -q --cov=app.application --cov-config=.coveragerc --cov-fail-under=18
 
 # Frontend
 cd frontend
@@ -34,7 +35,8 @@ npm run build
 ## Coverage (`application/`)
 
 - Config: [`backend/.coveragerc`](../../backend/.coveragerc) — mide `app/application`.
-- Umbral CI actual: **15%** (piso anti-regresión; subir conforme crezcan tests de inventarios / Fire / Agro).
+- Umbral CI actual: **18%** (H5; subir hacia 25%+ con inventarios S1/PS).
+- **import-linter** (`backend/pyproject.toml`): `domain` sin FastAPI/SQLAlchemy/pandas/…; `application` sin `fastapi`/`app.api`. CI: `lint-imports`.
 - Módulos aún fríos (0% o casi): `soilplus`, `time_series`, `s1_inventory`, `ps_planet`, pipelines Fire `process_dnbr` / `download_s2`.
 
 ## ESLint

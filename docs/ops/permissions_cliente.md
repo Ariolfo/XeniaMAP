@@ -2,7 +2,8 @@
 
 **Fecha:** 2026-09-06 (actualizado middleware `/raster`)  
 **Capa 1:** middleware `_is_cliente_allowed_request` (`app/main.py`) — qué paths puede llamar `role=cliente`.  
-**Capa 2:** deps en el endpoint — tenant / ownership / `publicado` / admin.
+**Capa 2:** deps en el endpoint — tenant / ownership / `publicado` / admin  
+(reglas de producto en `domain/identity/policies.py`; `api/deps.py` solo carga hechos DB y mapea a HTTP).
 
 ## Reglas de producto
 

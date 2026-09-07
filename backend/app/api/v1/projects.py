@@ -8,7 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import assert_user_can_delete_project, get_current_user, require_admin, tenant_from_jwt
-from app.core.order_email import send_study_order_notification
+from app.application.agro.notify import NotifyStudyOrderOrProject
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import AIResult, Layer, Project, ProjectProcessingLog, ProjectShare, RasterLayer, StudyOrder, User
@@ -301,19 +301,27 @@ def patch_project_status(
         raise HTTPException(status_code=404, detail="Project not found")
     prev = project.status
     now = datetime.utcnow()
-    project.status = payload.status
-    if payload.status == "en proceso":
+    from app.domain.agro.project_status import assert_project_transition, plan_project_status_change
+    from app.domain.errors import InvalidStatusError
+
+    try:
+        new_status = assert_project_transition(prev, payload.status)
+    except InvalidStatusError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    effects = plan_project_status_change(new_status)
+    project.status = effects.status
+    if effects.set_processing_started:
         project.processing_started_at = now
         project.processed_by_admin_id = admin.id
-    if payload.status == "procesado":
+    if effects.set_processing_completed:
         project.processing_completed_at = now
         project.processed_by_admin_id = admin.id
-    if payload.status == "publicado":
+    if effects.set_published:
         project.published_at = now
         project.approved_by_admin_id = admin.id
         owner = db.query(User).filter(User.id == project.owner_user_id).first()
-        if owner:
-            send_study_order_notification(
+        if owner and effects.notify_owner:
+            NotifyStudyOrderOrProject().execute(
                 order_id=project.id,
                 user_email=owner.email,
                 lines=[

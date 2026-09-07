@@ -121,7 +121,7 @@ const PHASES: Phase[] = [
       "Todo flujo nuevo: UC.execute; cero reglas de negocio en routers",
     ],
     fat: ["deps.py (authz)", "soilplus UC: separar orquestación vs algoritmo"],
-    exit: "Authz testeable sin FastAPI; routers sin if role/status de producto",
+    exit: "Hecho 2026-09-07 — domain identity/agro/fire + deps glue + tests sin FastAPI",
   },
   {
     id: "H3",
@@ -136,7 +136,7 @@ const PHASES: Phase[] = [
       "Pilotos: list+preview raster, enqueue S2, FIRMS, MVT sync, Fire tiles",
     ],
     fat: ["tasks/jobs.py ~1238 vía JobQueuePort", "raster_geo / xyz_tiles → TileRenderPort"],
-    exit: "≥5 flujos críticos solo por ports; tests UC con mocks",
+    exit: "Hecho 2026-09-07 — 5 ports + adapters + ≥5 flujos + tests mock",
   },
   {
     id: "H4",
@@ -159,7 +159,7 @@ const PHASES: Phase[] = [
       "clustering ~855",
       "s2_vegetation_indices ~803",
     ],
-    exit: "modules/fire sin imports desde api; jobs solo dispatch",
+    exit: "Hecho 2026-09-07 — fire_jobs/api sin modules; jobs dispatch UC",
   },
   {
     id: "H5",
@@ -174,7 +174,7 @@ const PHASES: Phase[] = [
       "Dockerfile API slim vs worker GIS (mismo repo) — escala sin microservicios",
     ],
     fat: ["Imagen única xeniamap-backend (deps GIS también en API)"],
-    exit: "Checklist hexagonal total en monolito; p95 mapa no degradado",
+    exit: "Hecho 2026-09-07 — FIRMS DTO + UoW piloto + import-linter + api/worker images (deps aún compartidas)",
   },
   {
     id: "B1",
@@ -251,20 +251,67 @@ const TODO_H1 = [
   },
 ];
 
-const TODO_NEAR = [
+const TODO_H2 = [
   {
     id: "c",
     content: "H2: domain policies authz (publicado / share / fire own)",
-    status: "pending" as const,
+    status: "completed" as const,
   },
+  {
+    id: "c2",
+    content: "H2: estados Project / StudyOrder / FireOrder + glue routers",
+    status: "completed" as const,
+  },
+];
+
+const TODO_H3 = [
   {
     id: "d",
-    content: "H3: JobQueuePort + ProjectRepository piloto",
+    content: "H3: JobQueuePort + ProjectRepository + Storage/Tiles/Mail",
+    status: "completed" as const,
+  },
+  {
+    id: "d2",
+    content: "H3: ≥5 flujos críticos + tests UC con mocks",
+    status: "completed" as const,
+  },
+];
+
+const TODO_H4 = [
+  {
+    id: "e",
+    content: "H4: encapsular process_dnbr/FIRMS solo vía application/fire",
+    status: "completed" as const,
+  },
+  {
+    id: "f",
+    content: "H4: fire_jobs/api sin modules; jobs.py dispatch UC piloto",
+    status: "completed" as const,
+  },
+];
+
+const TODO_H5 = [
+  {
+    id: "g",
+    content: "H5: FIRMS DTO + UoW/repos piloto Fire + import-linter cov≥18",
+    status: "completed" as const,
+  },
+  {
+    id: "h",
+    content: "H5: Dockerfile API vs worker (tags locales)",
+    status: "completed" as const,
+  },
+];
+
+const TODO_NEAR = [
+  {
+    id: "i",
+    content: "B1: contratos extractables solo con trigger (SNAP/GPU/CDSE)",
     status: "pending" as const,
   },
   {
-    id: "e",
-    content: "H4: encapsular process_dnbr solo vía application/fire",
+    id: "j",
+    content: "Deuda: UC residuales Session→UoW; slim real requirements-api",
     status: "pending" as const,
   },
 ];
@@ -439,13 +486,15 @@ export default function XeniaMapHexagonalModularRoadmap() {
 
       <Grid columns={2} gap={16}>
         <Card>
-          <CardHeader>H0 + H1 hechos</CardHeader>
+          <CardHeader>H0–H5 hechos</CardHeader>
           <CardBody>
-            <TodoList todos={[...TODO_H0, ...TODO_H1]} />
+            <TodoList
+              todos={[...TODO_H0, ...TODO_H1, ...TODO_H2, ...TODO_H3, ...TODO_H4, ...TODO_H5]}
+            />
           </CardBody>
         </Card>
         <Card>
-          <CardHeader>Próximos sprints (H2–H4)</CardHeader>
+          <CardHeader>Próximo (B1 + deuda H5)</CardHeader>
           <CardBody>
             <TodoList todos={TODO_NEAR} />
           </CardBody>

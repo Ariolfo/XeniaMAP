@@ -15,7 +15,7 @@ from app.api.deps import get_current_user, require_admin
 from app.api.v1.helpers import _tenant_storage
 from app.api.v1.helpers import validate_upload_size
 from app.api.v1.layers import _kml_to_geojson
-from app.core.order_email import send_study_order_notification
+from app.application.agro.notify import NotifyStudyOrderOrProject
 from app.db.session import get_db
 from app.models.models import Layer, Project, ProjectProcessingLog, StudyOrder, User
 from app.schemas.schemas import StudyOrderCreate, StudyOrderDetail, StudyOrderStatusPatch, StudyOrderSummary
@@ -265,7 +265,7 @@ def create_study_order(
         f"Datos de suelo: {yn(row.has_soil_data)}",
         f"Información adicional:\n{row.extra_notes or '—'}",
     ]
-    send_study_order_notification(order_id=row.id, user_email=user.email, lines=lines)
+    NotifyStudyOrderOrProject().execute(order_id=row.id, user_email=user.email, lines=lines)
     return _order_to_detail(row, user.email)
 
 
@@ -316,47 +316,44 @@ def patch_study_order_status(
     if not o:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
     prev = o.status
-    o.status = payload.status
     now = datetime.utcnow()
-    if payload.status == "pendiente":
-        if o.project_id:
-            p = db.query(Project).filter(Project.id == o.project_id).first()
-            if p:
-                p.status = "pendiente"
-                db.add(p)
-    if payload.status == "procesado":
+    from app.domain.agro.study_order_status import (
+        assert_study_order_transition,
+        plan_study_order_status_change,
+    )
+    from app.domain.errors import InvalidStatusError
+
+    try:
+        new_status = assert_study_order_transition(prev, payload.status)
+    except InvalidStatusError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    effects = plan_study_order_status_change(new_status)
+    o.status = effects.status
+    if effects.assign_admin:
         o.assigned_admin_id = _admin.id
+    if effects.set_order_processing_completed:
         o.processing_completed_at = now
-        if not o.processing_started_at:
-            o.processing_started_at = now
-        if o.project_id:
-            p = db.query(Project).filter(Project.id == o.project_id).first()
-            if p:
-                p.status = "procesado"
-                if not p.processing_started_at:
-                    p.processing_started_at = now
+    if effects.set_order_processing_started_if_missing and not o.processing_started_at:
+        o.processing_started_at = now
+    if effects.set_order_processing_completed_if_missing and not o.processing_completed_at:
+        o.processing_completed_at = now
+    if o.project_id and effects.project_status:
+        p = db.query(Project).filter(Project.id == o.project_id).first()
+        if p:
+            p.status = effects.project_status
+            if effects.set_project_processing_started_if_missing and not p.processing_started_at:
+                p.processing_started_at = now
+            if effects.set_project_processing_completed:
                 p.processing_completed_at = now
+            if effects.set_project_processing_completed_if_missing and not p.processing_completed_at:
+                p.processing_completed_at = now
+            if effects.set_project_published_if_missing and not p.published_at:
+                p.published_at = now
+            if effects.set_project_processed_by_admin:
                 p.processed_by_admin_id = _admin.id
-                db.add(p)
-    if payload.status == "publicado":
-        o.assigned_admin_id = _admin.id
-        if not o.processing_started_at:
-            o.processing_started_at = now
-        if not o.processing_completed_at:
-            o.processing_completed_at = now
-        if o.project_id:
-            p = db.query(Project).filter(Project.id == o.project_id).first()
-            if p:
-                p.status = "publicado"
-                if not p.processing_started_at:
-                    p.processing_started_at = now
-                if not p.processing_completed_at:
-                    p.processing_completed_at = now
-                if not p.published_at:
-                    p.published_at = now
-                p.processed_by_admin_id = _admin.id
+            if effects.set_project_approved_by_admin:
                 p.approved_by_admin_id = _admin.id
-                db.add(p)
+            db.add(p)
     if o.project_id:
         db.add(
             ProjectProcessingLog(

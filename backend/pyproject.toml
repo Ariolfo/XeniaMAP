@@ -1,0 +1,34 @@
+# Import Linter (H5) — run from backend/: `lint-imports`
+# See docs/ops/quality.md
+
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+id = "domain-independence"
+name = "Domain independence (no frameworks / GIS libs)"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "celery",
+    "sqlalchemy",
+    "pandas",
+    "geopandas",
+    "rasterio",
+    "redis",
+]
+
+[[tool.importlinter.contracts]]
+id = "application-no-fastapi"
+name = "Application does not import FastAPI delivery"
+type = "forbidden"
+source_modules = ["app.application"]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "app.api",
+]

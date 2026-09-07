@@ -558,10 +558,13 @@ class StudyOrderStatusPatch(BaseModel):
     @field_validator("status")
     @classmethod
     def allowed_status(cls, v: str) -> str:
-        s = v.strip().lower().replace("_", " ")
-        if s not in {"pendiente", "procesado", "publicado"}:
-            raise ValueError("Estado debe ser: pendiente, procesado o publicado")
-        return s
+        from app.domain.agro.study_order_status import normalize_study_order_status
+        from app.domain.errors import InvalidStatusError
+
+        try:
+            return normalize_study_order_status(v)
+        except InvalidStatusError as exc:
+            raise ValueError(exc.message) from exc
 
 
 class FireOrderCreate(BaseModel):
@@ -650,20 +653,13 @@ class FireOrderStatusPatch(BaseModel):
     @field_validator("status")
     @classmethod
     def allowed_status(cls, v: str) -> str:
-        s = v.strip().lower()
-        allowed = {
-            "pendiente",
-            "en_descarga",
-            "descargado",
-            "procesando",
-            "procesado",
-            "validando",
-            "validado",
-            "error",
-        }
-        if s not in allowed:
-            raise ValueError(f"Estado debe ser uno de: {', '.join(sorted(allowed))}")
-        return s
+        from app.domain.errors import InvalidStatusError
+        from app.domain.fire.order_status import normalize_fire_order_status
+
+        try:
+            return normalize_fire_order_status(v)
+        except InvalidStatusError as exc:
+            raise ValueError(exc.message) from exc
 
 
 class ProjectStatusPatch(BaseModel):
@@ -672,13 +668,13 @@ class ProjectStatusPatch(BaseModel):
     @field_validator("status")
     @classmethod
     def validate_project_status(cls, v: str) -> str:
-        s = v.strip().lower().replace("_", " ")
-        if s.replace(" ", "") == "enproceso":
-            s = "en proceso"
-        allowed = {"pendiente", "en proceso", "procesado", "publicado"}
-        if s not in allowed:
-            raise ValueError("Estado de proyecto inválido")
-        return s
+        from app.domain.agro.project_status import normalize_project_status
+        from app.domain.errors import InvalidStatusError
+
+        try:
+            return normalize_project_status(v)
+        except InvalidStatusError as exc:
+            raise ValueError(exc.message) from exc
 
 
 class ProcessingLogCreate(BaseModel):

@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import create_token, decode_token
 from app.db.session import get_db
+from app.domain.errors import AuthorizationError
+from app.domain.identity import policies as identity_policies
+from app.domain.identity.roles import is_admin
 from app.models.models import Project, ProjectShare, StudyOrder, User
 
 bearer = HTTPBearer(auto_error=False)
@@ -78,22 +81,15 @@ def assert_user_matches_session(user_id: int, user: User = Depends(get_current_u
 
 
 def require_admin(user: User = Depends(get_current_user)) -> User:
-    if str(user.role).lower() != "admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    try:
+        identity_policies.assert_admin_role(user.role)
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message) from exc
     return user
 
 
-def assert_user_can_delete_project(db: Session, user: User, project: Project) -> None:
-    """Admin puede eliminar cualquier proyecto del tenant; cliente solo los suyos (dueño u orden vinculada)."""
-    role = str(user.role or "").strip().lower()
-    if role == "admin":
-        return
-    if role != "cliente":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No autorizado")
-    owner_id = getattr(project, "owner_user_id", None)
-    if owner_id is not None and int(owner_id) == int(user.id):
-        return
-    linked = (
+def _has_study_order_link(db: Session, user: User, project: Project) -> bool:
+    return (
         db.query(StudyOrder)
         .filter(
             StudyOrder.user_id == user.id,
@@ -101,54 +97,51 @@ def assert_user_can_delete_project(db: Session, user: User, project: Project) ->
             StudyOrder.tenant_id == user.tenant_id,
         )
         .first()
-    )
-    if linked:
-        return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="No tienes permiso para eliminar este proyecto.",
+        is not None
     )
 
 
-def assert_cliente_can_view_published_dashboard(db: Session, user: User, project: Project) -> None:
-    """Cliente solo ve datos de proyectos publicados y con vínculo (dueño u orden de estudio)."""
-    role = str(user.role or "").strip().lower()
-    if role != "cliente":
-        return
-    st = str(project.status or "").strip().lower()
-    if st != "publicado":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Los resultados de este proyecto no están publicados.",
-        )
-    owner_id = getattr(project, "owner_user_id", None)
-    if owner_id is not None and int(owner_id) == int(user.id):
-        return
-    linked = (
-        db.query(StudyOrder)
-        .filter(
-            StudyOrder.user_id == user.id,
-            StudyOrder.project_id == project.id,
-            StudyOrder.tenant_id == user.tenant_id,
-        )
-        .first()
-    )
-    if linked:
-        return
-    shared = (
+def _has_project_share(db: Session, user: User, project: Project) -> bool:
+    return (
         db.query(ProjectShare)
         .filter(
             ProjectShare.user_id == user.id,
             ProjectShare.project_id == project.id,
         )
         .first()
+        is not None
     )
-    if shared:
+
+
+def assert_user_can_delete_project(db: Session, user: User, project: Project) -> None:
+    """Admin puede eliminar cualquier proyecto del tenant; cliente solo los suyos (dueño u orden vinculada)."""
+    try:
+        identity_policies.assert_can_delete_project(
+            role=user.role,
+            user_id=int(user.id),
+            owner_user_id=getattr(project, "owner_user_id", None),
+            has_study_order_link=_has_study_order_link(db, user, project),
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message) from exc
+
+
+def assert_cliente_can_view_published_dashboard(db: Session, user: User, project: Project) -> None:
+    """Cliente solo ve datos de proyectos publicados y con vínculo (dueño u orden de estudio)."""
+    # Evitar consultas extra cuando el gate no aplica (admin).
+    if is_admin(user.role):
         return
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="No tienes acceso a los resultados de este proyecto.",
-    )
+    try:
+        identity_policies.assert_cliente_can_view_published_dashboard(
+            role=user.role,
+            project_status=getattr(project, "status", None),
+            user_id=int(user.id),
+            owner_user_id=getattr(project, "owner_user_id", None),
+            has_study_order_link=_has_study_order_link(db, user, project),
+            has_project_share=_has_project_share(db, user, project),
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message) from exc
 
 
 def require_project_dashboard_access(

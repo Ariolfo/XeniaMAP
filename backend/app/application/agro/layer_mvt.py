@@ -10,6 +10,8 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from app.models.models import Layer
+from app.domain.shared.ports import TileRenderPort
+from app.infrastructure.composition import default_tile_render
 from app.services.project_geometry import (
     _geometries_wgs84_from_geojson,
     layer_to_geojson,
@@ -129,7 +131,10 @@ class SyncLayerGeom:
 
 
 class RenderLayerMvtTile:
-    """``ST_AsMVT`` para una capa publicada (lazy-sync si ``geom`` vacío)."""
+    """``ST_AsMVT`` para una capa publicada (lazy-sync si ``geom`` vacío) vía ``TileRenderPort``."""
+
+    def __init__(self, tiles: TileRenderPort | None = None) -> None:
+        self._tiles = tiles or default_tile_render()
 
     def execute(
         self,
@@ -154,43 +159,15 @@ class RenderLayerMvtTile:
         if not ready:
             raise LookupError("layer_geom_missing")
 
-        row = db.execute(
-            text(
-                """
-                SELECT ST_AsMVT(tile, :layer_name, :extent, 'geom') AS mvt
-                FROM (
-                  SELECT ST_AsMVTGeom(
-                    ST_Transform(l.geom, 3857),
-                    ST_TileEnvelope(:z, :x, :y),
-                    :extent,
-                    :buffer,
-                    true
-                  ) AS geom
-                  FROM layers l
-                  WHERE l.id = :id
-                    AND l.tenant_id = :tid
-                    AND l.project_id = :pid
-                    AND l.geom IS NOT NULL
-                    AND ST_Intersects(
-                      l.geom,
-                      ST_Transform(ST_TileEnvelope(:z, :x, :y), 4326)
-                    )
-                ) AS tile
-                WHERE tile.geom IS NOT NULL
-                """
-            ),
-            {
-                "layer_name": MVT_SOURCE_LAYER,
-                "extent": MVT_EXTENT,
-                "buffer": MVT_BUFFER,
-                "z": z,
-                "x": x,
-                "y": y,
-                "id": layer.id,
-                "tid": layer.tenant_id,
-                "pid": layer.project_id,
-            },
-        ).first()
-        if not row or row[0] is None:
-            return b""
-        return bytes(row[0])
+        return self._tiles.render_layer_mvt_tile(
+            db,
+            layer_id=int(layer.id),
+            tenant_id=int(layer.tenant_id),
+            project_id=int(layer.project_id),
+            z=z,
+            x=x,
+            y=y,
+            source_layer=MVT_SOURCE_LAYER,
+            extent=MVT_EXTENT,
+            buffer=MVT_BUFFER,
+        )

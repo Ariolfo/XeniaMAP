@@ -185,85 +185,17 @@ def download_sentinel2(
     raster_layer_id: int,
     db_url: str,
 ) -> dict:
-    from app.services.sentinel2 import get_copernicus_credentials, search_and_download_monthly
+    from app.application.agro.run_sentinel2_download import RunSentinel2DownloadJob
 
-    copernicus_user, copernicus_password = get_copernicus_credentials()
-
-    def progress_cb(current: int, total: int, message: str) -> None:
-        pct = int((current / max(total, 1)) * 100)
-        self.update_state(
-            state="PROGRESS",
-            meta={"progress": pct, "message": message, "phase": "downloading"},
-        )
-        _update_raster_sentinel_status(
-            db_url,
-            raster_layer_id,
-            {"progress": pct, "progress_message": message, "status": "downloading"},
-        )
-
-    self.update_state(state="PROGRESS", meta={"progress": 0, "message": "Iniciando...", "phase": "downloading"})
-    start = date.fromisoformat(start_date_str)
-    end = date.fromisoformat(end_date_str)
-
-    try:
-        result = search_and_download_monthly(
-            wkt,
-            start,
-            end,
-            output_dir,
-            copernicus_user,
-            copernicus_password,
-            progress_callback=progress_cb,
-        )
-    except Exception as exc:
-        logger.exception("Sentinel-2 download failed")
-        _update_raster_sentinel_status(
-            db_url,
-            raster_layer_id,
-            {
-                "status": "failed",
-                "error": str(exc),
-                "progress": 0,
-                "progress_message": f"Error: {exc}",
-            },
-        )
-        raise
-
-    try:
-        from sqlalchemy import create_engine
-        from sqlalchemy.orm import sessionmaker
-        from sqlalchemy.orm.attributes import flag_modified
-
-        from app.models.models import RasterLayer
-
-        engine = create_engine(db_url)
-        Session = sessionmaker(bind=engine)
-        db = Session()
-        raster = db.query(RasterLayer).filter(RasterLayer.id == raster_layer_id).first()
-        if raster:
-            meta = {
-                **(raster.raster_metadata or {}),
-                "status": "completed",
-                "total_downloaded": result["total_downloaded"],
-                "total_size_mb": result["total_size_mb"],
-                "files": [str(f) for f in result["files"]],
-                "skipped_low_coverage": result.get("skipped_low_coverage", 0),
-                "skipped_high_cloud": result.get("skipped_high_cloud", 0),
-                "progress": 100,
-                "progress_message": "Descarga terminada",
-            }
-            if result["files"]:
-                meta["primary_file"] = result["files"][0]
-                raster.file_path = result["files"][0]
-            raster.raster_metadata = meta
-            flag_modified(raster, "raster_metadata")
-            db.commit()
-        db.close()
-    except Exception:
-        logger.exception("Error updating raster metadata after S2 download")
-
-    self.update_state(state="SUCCESS", meta={"progress": 100, "message": "Terminado", "phase": "completed"})
-    return result
+    return RunSentinel2DownloadJob().execute(
+        wkt=wkt,
+        start_date_str=start_date_str,
+        end_date_str=end_date_str,
+        output_dir=output_dir,
+        raster_layer_id=raster_layer_id,
+        db_url=db_url,
+        update_state=self.update_state,
+    )
 
 
 @celery_app.task(name="tasks.download_sentinel1", bind=True)
@@ -1194,45 +1126,6 @@ def landing_markdown_pipeline(project_id: int) -> dict:
     Ejecuta ``scripts/generate_landing_markdown.py`` (montado en ``/repo/scripts``) para el
     proyecto: genera los 3 Markdown (PS, S1, S2) con imágenes embebidas, cada uno ≤ 4.9 MB.
     """
-    import os
-    import subprocess
-    import sys as _sys
+    from app.application.agro.run_landing_markdown import RunLandingMarkdownJob
 
-    from app.core.config import settings
-
-    script = Path("/repo/scripts/generate_landing_markdown.py")
-    if not script.is_file():
-        return {
-            "ok": False,
-            "error": "script_missing",
-            "message": f"No se encontró {script}. Monta ./scripts en el worker (docker-compose).",
-            "pipeline": "landing_markdown",
-        }
-    db_url = settings.database_url.replace("+psycopg2", "")
-    storage_root = os.environ.get("STORAGE_PATH", "/data/storage")
-    env = dict(os.environ)
-    env["PYTHONPATH"] = "/app"
-    cmd = [
-        _sys.executable,
-        str(script),
-        "--project-id",
-        str(project_id),
-        "--storage",
-        storage_root,
-        "--database-url",
-        db_url,
-    ]
-    logger.info("landing markdown: %s", " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
-    tail = "\n".join((proc.stdout or "").strip().splitlines()[-25:])
-    if proc.returncode != 0:
-        err_tail = "\n".join((proc.stderr or "").strip().splitlines()[-15:])
-        logger.error("landing markdown falló (rc=%s): %s", proc.returncode, err_tail)
-        return {
-            "ok": False,
-            "error": "generation_failed",
-            "message": err_tail or f"El generador terminó con código {proc.returncode}",
-            "log": tail,
-            "pipeline": "landing_markdown",
-        }
-    return {"ok": True, "log": tail, "pipeline": "landing_markdown"}
+    return RunLandingMarkdownJob().execute(project_id=project_id)

@@ -10,16 +10,20 @@ import numpy as np
 import rasterio
 from sqlalchemy.orm import Session
 
-from app.core.celery_task_registry import register_celery_task
 from app.core.storage_paths import _tenant_storage, ensure_external_sensor_download_dirs
+from app.domain.shared.ports import JobQueuePort
+from app.infrastructure.composition import default_job_queue
 from app.models.models import RasterLayer
 
 
 class StartSentinel2ProjectDownload:
     """
     Valida destino/credenciales, crea RasterLayer en estado downloading
-    y encola ``tasks.download_sentinel2``.
+    y encola ``tasks.download_sentinel2`` vía ``JobQueuePort``.
     """
+
+    def __init__(self, jobs: JobQueuePort | None = None) -> None:
+        self._jobs = jobs or default_job_queue()
 
     def execute(
         self,
@@ -76,36 +80,29 @@ class StartSentinel2ProjectDownload:
 
         from app.tasks.jobs import download_sentinel2
 
-        try:
-            async_result = download_sentinel2.delay(
-                wkt,
-                start_date,
-                end_date,
-                str(out_dir),
-                raster.id,
-                database_url,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"No se pudo encolar la descarga Sentinel-2. ¿Redis y worker activos? {exc!s}"
-            ) from exc
-
-        raster.raster_metadata = {
-            **(raster.raster_metadata or {}),
-            "celery_task_id": async_result.id,
-        }
-        db.commit()
-        register_celery_task(
-            async_result.id,
+        task_id = self._jobs.enqueue(
+            download_sentinel2,
+            wkt,
+            start_date,
+            end_date,
+            str(out_dir),
+            raster.id,
+            database_url,
             tenant_id=tenant_id,
             project_id=project_id,
             task_name="download_sentinel2",
         )
 
+        raster.raster_metadata = {
+            **(raster.raster_metadata or {}),
+            "celery_task_id": task_id,
+        }
+        db.commit()
+
         return {
             "status": "downloading",
             "raster_layer_id": raster.id,
-            "task_id": async_result.id,
+            "task_id": task_id,
             "output_dir": str(out_dir),
             "download_subpath": encoded_dest,
         }

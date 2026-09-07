@@ -12,6 +12,7 @@ import geopandas as gpd
 
 from app.application.fire.catalog import FIRE_RESULT_CATALOG, allowed_result_filenames, catalog_entry
 from app.core.config import settings
+from app.domain.shared.ports import TileRenderPort
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,11 @@ class FireResultPreview:
 
 
 class FireResultXyzTile:
+    def __init__(self, tiles: TileRenderPort | None = None) -> None:
+        from app.infrastructure.composition import default_tile_render
+
+        self._tiles = tiles or default_tile_render()
+
     def execute(
         self,
         *,
@@ -240,8 +246,6 @@ class FireResultXyzTile:
         y: int,
         severity_class: int | None = None,
     ) -> bytes:
-        from app.infrastructure.raster.xyz_tiles import render_fire_xyz_tile_png
-
         if z < 0 or z > 22 or x < 0 or y < 0:
             raise ValueError("tile z/x/y inválido")
         path = safe_result_path(order_id, filename)
@@ -270,7 +274,7 @@ class FireResultXyzTile:
         if catalog and isinstance(catalog.get("preview_meta"), dict):
             cmap = str(catalog["preview_meta"].get("index_preview_cmap") or cmap)
 
-        return render_fire_xyz_tile_png(
+        return self._tiles.render_fire_xyz_tile_png(
             path,
             z,
             x,

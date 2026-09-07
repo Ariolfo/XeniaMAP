@@ -1,14 +1,26 @@
-"""Puertos (interfaces) del dominio Fire — sin dependencias de frameworks."""
+"""Puertos (interfaces) del dominio Fire — sin frameworks ni pandas."""
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Protocol, Tuple
-
-import pandas as pd
+from typing import Protocol, Sequence, TypedDict, Tuple
 
 
 BBoxWSEN = Tuple[float, float, float, float]
+
+
+class FirmsHotspotRecord(TypedDict, total=False):
+    """Detección FIRMS canónica (DTO de puerto; sin DataFrame)."""
+
+    latitude: float
+    longitude: float
+    acq_date: str
+    acq_time: int | str
+    frp: float
+    confidence: str | float | int
+    satellite: str
+    firms_source: str
+    version: str
 
 
 class FirmsHotspotPort(Protocol):
@@ -21,6 +33,6 @@ class FirmsHotspotPort(Protocol):
         bbox: BBoxWSEN,
         start_date: date,
         end_date: date,
-    ) -> pd.DataFrame:
-        """Devuelve detecciones FIRMS (lat/lon/acq_*) en un DataFrame (puede estar vacío)."""
+    ) -> Sequence[FirmsHotspotRecord]:
+        """Devuelve detecciones FIRMS (lat/lon/acq_*); lista vacía si no hay datos."""
         ...

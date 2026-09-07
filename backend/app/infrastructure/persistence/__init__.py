@@ -1,0 +1,1 @@
+"""Paquete persistence adapters."""
