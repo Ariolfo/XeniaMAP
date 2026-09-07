@@ -11,6 +11,7 @@ export default function IngresoPanel({
   loading,
   authStep,
   otpDebug,
+  otpHint,
   onContinueEmail,
   onVerifyOtp,
   onResetEmailStep,
@@ -31,6 +32,7 @@ export default function IngresoPanel({
           loading={loading}
           authStep={authStep}
           otpDebug={otpDebug}
+          otpHint={otpHint}
           onContinueEmail={onContinueEmail}
           onVerifyOtp={onVerifyOtp}
           onResetEmailStep={onResetEmailStep}

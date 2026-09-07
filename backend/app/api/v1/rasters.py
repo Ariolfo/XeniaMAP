@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 import shutil
 import uuid
-import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin, tenant_from_jwt
+from app.api.deps import get_current_user, require_admin, require_project_dashboard_access, tenant_from_jwt
 from app.api.v1.helpers import (
     _existing_raster_path,
     _get_project_raster,
@@ -37,323 +36,59 @@ from app.services.raster_geo import (
     render_s1_vh_vv_ratio_preview_png,
 )
 from app.services.preprocess_pipeline_variant import is_planetscope_ps_recorte_filename
-from app.services.s2_composites import (
-    s2_acquisition_date_label,
-    s2_date_slug_for_filename,
-)
 from app.services.s2_vegetation_indices import sort_key_from_path_or_meta
-from app.services.sentinel_safe import (
-    S2_BANDS_10M_ORDER,
-    find_safe_ancestor,
-    find_sentinel_r10_band_files,
-    looks_like_sentinel2_product_zip_filename,
-    safe_extract_zip,
+from app.services.sentinel_safe import looks_like_sentinel2_product_zip_filename
+from app.tasks.jobs import process_raster
+
+
+from app.application.agro.rasters import (
+    delete_raster_layer_row,
+    upload_raster as upload_raster_uc,
+    _normalize_s2_sort_keys,
+    _parent_subpath_for_browse,
+    _project_root_path,
+    _raster_chronological_sort_key,
+    _scene_iso_yyyy_mm_dd_for_purge,
+    _s2_rgb_gallery_raster_meta,
+    _tenant_root_path,
 )
-from app.tasks.jobs import process_raster, process_s2_zip_layers
+from app.application.agro import rasters as _rasters_uc
 
 router = APIRouter()
 
 
-def _tenant_root_path(tenant_id: int) -> Path:
-    return (Path(settings.storage_path).resolve() / f"tenant_{tenant_id}").resolve()
-
-
-def _project_root_path(tenant_id: int, project_id: int) -> Path:
-    return (Path(settings.storage_path).resolve() / f"tenant_{tenant_id}" / f"project_{project_id}").resolve()
-
-
 def _safe_path_under_tenant(tenant_root: Path, rel: str) -> Path:
-    rel = (rel or "").strip().replace("\\", "/")
-    parts = [p for p in rel.split("/") if p and p != "."]
-    root = tenant_root.resolve()
-    cur = root
-    for p in parts:
-        if p == "..":
-            raise HTTPException(status_code=400, detail="Ruta inválida")
-        cur = (cur / p).resolve()
     try:
-        cur.relative_to(root)
+        return _rasters_uc._safe_path_under_tenant(tenant_root, rel)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Ruta fuera del tenant") from exc
-    return cur
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _safe_path_under_project(project_root: Path, rel: str) -> Path:
-    rel = (rel or "").strip().replace("\\", "/")
-    parts = [p for p in rel.split("/") if p and p != "."]
-    root = project_root.resolve()
-    cur = root
-    for p in parts:
-        if p == "..":
-            raise HTTPException(status_code=400, detail="Ruta inválida")
-        cur = (cur / p).resolve()
     try:
-        cur.relative_to(root)
+        return _rasters_uc._safe_path_under_project(project_root, rel)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Ruta fuera del proyecto") from exc
-    return cur
-
-
-def _parent_subpath_for_browse(base_root: Path, current: Path) -> str | None:
-    try:
-        rel = current.resolve().relative_to(base_root.resolve())
-    except ValueError:
-        return None
-    if rel == Path(".") or str(rel) == ".":
-        return None
-    par = rel.parent
-    if par == Path(".") or str(par) == ".":
-        return ""
-    return par.as_posix()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _scan_l2a_products_in_dir(root: Path) -> dict:
-    out: dict = {
-        "downloads_dir": str(root.resolve()),
-        "exists": root.is_dir(),
-        "zip_l2a": [],
-        "safe_folders": [],
-        "other_top_level": [],
-    }
-    if not root.is_dir():
-        return out
     try:
-        for p in sorted(root.iterdir()):
-            if p.is_file():
-                if p.suffix.lower() == ".zip":
-                    try:
-                        sz = p.stat().st_size
-                    except OSError:
-                        sz = 0
-                    entry: dict = {"name": p.name, "size_bytes": sz}
-                    if not looks_like_sentinel2_product_zip_filename(p.name):
-                        entry["weak_match"] = True
-                    out["zip_l2a"].append(entry)
-                else:
-                    out["other_top_level"].append(p.name)
-            elif p.is_dir():
-                if p.name.upper().endswith(".SAFE"):
-                    out["safe_folders"].append(p.name)
-                else:
-                    out["other_top_level"].append(p.name + "/")
-    except OSError as exc:
+        return _rasters_uc._scan_l2a_products_in_dir(root)
+    except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return out
-
-
-def _looks_like_sentinel1_product_zip_filename(name: str) -> bool:
-    u = name.upper()
-    if not u.endswith(".ZIP"):
-        return False
-    return "S1" in u and ("IW_GRD" in u or "IW_GRDM" in u or "GRDH" in u)
 
 
 def _scan_sentinel1_products_in_dir(sentinel1_root: Path) -> dict:
-    """
-    Inventario bajo ``…/downloads/<slug>/Sentinel1/``: carpetas ``*.SAFE`` (incluye
-    subcarpetas p. ej. ``YYYY/MM/`` de descargas antiguas) y ZIP GRD IW en el primer nivel.
-    """
-    out: dict = {
-        "downloads_dir": str(sentinel1_root.resolve()),
-        "exists": sentinel1_root.is_dir(),
-        "zip_l2a": [],
-        "safe_folders": [],
-        "other_top_level": [],
-    }
-    if not sentinel1_root.is_dir():
-        return out
-
-    safe_rel_set: set[str] = set()
     try:
-        for p in sorted(sentinel1_root.rglob("*")):
-            if not p.is_dir():
-                continue
-            if not p.name.upper().endswith(".SAFE"):
-                continue
-            try:
-                rel = p.resolve().relative_to(sentinel1_root.resolve()).as_posix()
-            except ValueError:
-                continue
-            if rel:
-                safe_rel_set.add(rel)
-        out["safe_folders"] = sorted(safe_rel_set)
-
-        for p in sorted(sentinel1_root.iterdir()):
-            if p.name.startswith("."):
-                continue
-            if p.is_file():
-                if p.suffix.lower() == ".zip":
-                    try:
-                        sz = p.stat().st_size
-                    except OSError:
-                        sz = 0
-                    entry: dict = {"name": p.name, "size_bytes": sz}
-                    if not _looks_like_sentinel1_product_zip_filename(p.name):
-                        entry["weak_match"] = True
-                    out["zip_l2a"].append(entry)
-                else:
-                    out["other_top_level"].append(p.name)
-            elif p.is_dir():
-                if p.name.upper().endswith(".SAFE"):
-                    continue
-                out["other_top_level"].append(p.name + "/")
-    except OSError as exc:
+        return _rasters_uc._scan_sentinel1_products_in_dir(sentinel1_root)
+    except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return out
-
-
-def _raster_chronological_sort_key(raster: RasterLayer) -> str:
-    """Clave ISO YYYY-MM-DD para ordenar recortes S2 y otros rasters por fecha de escena."""
-    meta = raster.raster_metadata or {}
-    sk = meta.get("s2_sort_key")
-    if isinstance(sk, str) and sk.strip():
-        return sk.strip()
-    dl = meta.get("s2_date_label")
-    if isinstance(dl, str) and dl.count("/") == 2:
-        parts = [p.strip() for p in dl.split("/")]
-        if len(parts) == 3:
-            dd, mm, yyyy = parts[0], parts[1], parts[2]
-            if len(yyyy) == 4 and len(mm) <= 2 and len(dd) <= 2:
-                return f"{yyyy}-{mm.zfill(2)}-{dd.zfill(2)}"
-    if raster.created_at:
-        return raster.created_at.isoformat()
-    return f"id_{raster.id:010d}"
-
-
-def _remove_extract_dir_if_no_other_layers(
-    db: Session, project_id: int, tenant_id: int, raster: RasterLayer
-) -> None:
-    """Elimina la carpeta descomprimida solo cuando no queda ninguna capa que la use."""
-    meta = raster.raster_metadata or {}
-    ex = meta.get("extract_dir")
-    if not ex:
-        return
-    rid = raster.id
-    for other in (
-        db.query(RasterLayer)
-        .filter(
-            RasterLayer.project_id == project_id,
-            RasterLayer.tenant_id == tenant_id,
-            RasterLayer.id != rid,
-        )
-        .all()
-    ):
-        if (other.raster_metadata or {}).get("extract_dir") == ex:
-            return
-    try:
-        ep = Path(ex).resolve()
-        root = Path(settings.storage_path).resolve()
-        if str(ep).startswith(str(root)) and ep.is_dir():
-            shutil.rmtree(ep, ignore_errors=True)
-    except Exception:
-        pass
-
-
-def delete_raster_layer_row(db: Session, tenant_id: int, project_id: int, raster: RasterLayer) -> None:
-    """Elimina archivos en disco vinculados a la capa y la fila ``raster_layers``. No hace ``commit``."""
-    _remove_extract_dir_if_no_other_layers(db, project_id, tenant_id, raster)
-    stack_p = (raster.raster_metadata or {}).get("s2_stack_path")
-    rid = raster.id
-    for p in [raster.cog_path, raster.file_path]:
-        if p:
-            fp = Path(p)
-            if fp.exists():
-                fp.unlink(missing_ok=True)
-    if stack_p:
-        others = (
-            db.query(RasterLayer)
-            .filter(
-                RasterLayer.project_id == project_id,
-                RasterLayer.tenant_id == tenant_id,
-                RasterLayer.id != rid,
-            )
-            .all()
-        )
-        if not any((o.raster_metadata or {}).get("s2_stack_path") == stack_p for o in others):
-            sp = Path(stack_p).resolve()
-            root = Path(settings.storage_path).resolve()
-            if str(sp).startswith(str(root)) and sp.is_file():
-                sp.unlink(missing_ok=True)
-    db.delete(raster)
-
-
-def _normalize_s2_sort_keys(raw: list[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for s in raw:
-        t = (s or "").strip()
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", t):
-            continue
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
-
-
-def _s2_rgb_gallery_raster_meta(meta: dict) -> bool:
-    """
-    Capas que la galería «Visual RGB (Sentinel-2)» puede listar (misma idea que
-    ``filterGalleryRasters`` en el frontend), excl. S1, PS y descargas crudas.
-    """
-    if not meta:
-        return False
-    if (meta.get("source") == "sentinel-2" or meta.get("source") == "sentinel-1") and meta.get("type") == "download":
-        return False
-    if is_legacy_s2_zip_band_raster(meta):
-        return False
-    if not meta.get("bounds_wgs84"):
-        return False
-    if meta.get("composite_kind") == "false_color_nir":
-        return False
-    if meta.get("planetscope_composite"):
-        return False
-    if meta.get("s1_grd_recorte"):
-        return False
-    return bool(
-        meta.get("s2_l2a_recorte")
-        or meta.get("s2_four_band_stack")
-        or meta.get("s2_six_band_stack")
-        or meta.get("composite_kind") == "true_color"
-    )
-
-
-def _scene_iso_yyyy_mm_dd_for_purge(raster: RasterLayer) -> str | None:
-    """Fecha de escena ISO (solo metadatos, ruta o nombre ``dd/mm/aaaa_clip``); nunca ``created_at``."""
-    meta = raster.raster_metadata or {}
-    sk = meta.get("s2_sort_key")
-    if isinstance(sk, str):
-        t = sk.strip()
-        if len(t) >= 10 and re.match(r"^\d{4}-\d{2}-\d{2}", t):
-            return t[:10]
-    try:
-        fp = Path(raster.file_path or "")
-    except Exception:
-        fp = Path("")
-    if raster.file_path:
-        fk = sort_key_from_path_or_meta(fp, meta)
-        if isinstance(fk, str):
-            t = fk.strip()
-            if len(t) >= 10 and re.match(r"^\d{4}-\d{2}-\d{2}", t):
-                return t[:10]
-    dl = meta.get("s2_date_label")
-    if isinstance(dl, str) and dl.count("/") == 2:
-        parts = [p.strip() for p in dl.split("/")]
-        if len(parts) == 3:
-            dd, mm, yyyy = parts[0], parts[1], parts[2]
-            if len(yyyy) == 4 and dd.isdigit() and mm.isdigit():
-                return f"{yyyy}-{mm.zfill(2)}-{dd.zfill(2)}"
-    name = (raster.name or "").strip()
-    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})_clip$", name)
-    if m:
-        dd, mo, yyyy = m.group(1), m.group(2), m.group(3)
-        return f"{yyyy}-{mo}-{dd}"
-    return None
-
 
 @router.get("/raster/tenant-storage-browse")
 def tenant_storage_browse(
     path: str = Query("", description="Ruta relativa bajo storage/tenant_*/"),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Lista carpetas y archivos desde la raíz del tenant (p. ej. project_1, project_2, …)."""
     root = _tenant_root_path(tenant_id)
@@ -397,7 +132,10 @@ def tenant_storage_browse(
 
 
 @router.get("/raster/external-data-status")
-def external_data_status(tenant_id: int = Depends(tenant_from_jwt)):
+def external_data_status(
+    tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
+):
     """Indica si hay disco externo montado y listo para recorte local."""
     root = external_data_root_path()
     return {
@@ -411,6 +149,7 @@ def external_data_status(tenant_id: int = Depends(tenant_from_jwt)):
 def external_data_browse(
     path: str = Query("", description="Ruta relativa (posix) bajo EXTERNAL_DATA_ROOT"),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Navega carpetas en el disco externo local (sin copiar al proyecto)."""
     root = external_data_root_path()
@@ -462,6 +201,7 @@ def external_data_mkdir(
     name: str = Form(..., description="Nombre de la carpeta nueva (un solo segmento)"),
     parent_path: str = Form("", description="Ruta relativa bajo el disco externo donde crear"),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Crea una subcarpeta bajo el disco externo (p. ej. un lote nuevo)."""
     root = external_data_root_path()
@@ -505,6 +245,7 @@ def project_storage_browse(
     path: str = Query("", description="Ruta relativa (posix) bajo la raíz del proyecto"),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Lista carpetas y archivos para navegar desde la raíz del proyecto (storage/tenant_*/project_*)."""
     project = db.query(Project).filter(Project.id == project_id, Project.tenant_id == tenant_id).first()
@@ -559,6 +300,7 @@ def project_downloads_inventory(
     ),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """
     Lista productos Sentinel-2 (ZIP y carpetas .SAFE reconocibles, p. ej. L2A/L1C) en el directorio indicado (primer nivel),
@@ -590,6 +332,7 @@ def project_sentinel1_inventory(
     ),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """
     Lista productos Sentinel-1 (carpetas ``*.SAFE``, ZIP GRD) en la carpeta indicada.
@@ -620,6 +363,7 @@ def project_planetscope_zip_inventory(
     ),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Lista ``*.zip`` PlanetScope en la carpeta origen (por defecto ``rasterPS/``)."""
     from app.services.preprocess_pipeline_variant import planet_zip_dir_name
@@ -675,6 +419,7 @@ async def project_local_folder_import(
     batch_id: str | None = Form(None, description="Id de lote; si se omite se crea uno nuevo"),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """
     Sube un archivo desde el computador del usuario a ``local_import/<kind>/<batch_id>/``.
@@ -753,6 +498,7 @@ def copy_downloads_from_project(
     target_project_id: int = Query(..., description="Proyecto destino (proyecto actual)"),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """
     Copia el contenido de ``downloads/<slug>`` del proyecto origen sobre la carpeta de descargas del proyecto destino
@@ -788,6 +534,7 @@ def list_project_download_files(
     project_id: int,
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """List files in the project's Sentinel-2 download folder (not shown as map layers until imported)."""
     project = db.query(Project).filter(Project.id == project_id, Project.tenant_id == tenant_id).first()
@@ -814,6 +561,7 @@ def import_raster_from_downloads(
     filename: str = Query(..., description="File name inside project download folder"),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     """Copy a file from the project download folder into rasters and register as a normal raster layer."""
     safe = Path(filename).name
@@ -871,168 +619,21 @@ async def upload_raster(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
-    project = db.query(Project).filter(Project.id == project_id, Project.tenant_id == tenant_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
     await validate_upload_size(file)
-    ext = Path(file.filename).suffix.lower()
-    if ext not in {".tif", ".tiff", ".jp2", ".png", ".jpg", ".jpeg", ".zip"}:
-        raise HTTPException(status_code=400, detail="Unsupported raster format")
-
-    out_dir = _tenant_storage(tenant_id, project_id, "rasters")
-    extract_dir: Path | None = None
-
-    if ext == ".zip":
-        pack_id = uuid.uuid4().hex
-        zip_path = out_dir / f"{pack_id}.zip"
-        with zip_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        extract_dir = out_dir / f"s2_{pack_id}"
-        try:
-            safe_extract_zip(zip_path, extract_dir)
-        except (zipfile.BadZipFile, OSError):
-            zip_path.unlink(missing_ok=True)
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            raise HTTPException(status_code=400, detail="ZIP invalido o no se pudo descomprimir")
-        zip_path.unlink(missing_ok=True)
-
-        band_files = find_sentinel_r10_band_files(extract_dir)
-        missing = [b for b in S2_BANDS_10M_ORDER if b not in band_files]
-        if missing:
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No se encontraron JP2 de bandas: {', '.join(missing)}. "
-                    "Se requieren B02, B03, B04 y B08 a 10 m (L2A: IMG_DATA/R10m; "
-                    "L1C: IMG_DATA con nombres tipo …_B04.jp2). Producto .SAFE completo."
-                ),
-            )
-
-        zip_stem = Path(file.filename).stem
-        first_jp2 = next(iter(band_files.values()))
-        safe_anc = find_safe_ancestor(Path(first_jp2).resolve())
-        stem_for_date = safe_anc.stem if safe_anc else zip_stem
-        date_label = s2_acquisition_date_label(stem_for_date)
-        date_slug = s2_date_slug_for_filename(date_label)
-        name_rgb = f"{date_label}_RGB"
-        name_nir = f"{date_label}_NIR"
-
-        uid = uuid.uuid4().hex
-        # Un solo TIF 4 bandas (B04,B03,B02,B08); nombre con fecha desde carpeta .SAFE
-        stack_tif = out_dir / f"{date_slug}_S2_4band_{pack_id[:8]}.tif"
-        rgb_src = out_dir / f"{uid}_rgb.tif"
-        nir_src = out_dir / f"{uid}_nir.tif"
-        rgb_cog = out_dir / f"{uid}_rgb_cog.tif"
-        nir_cog = out_dir / f"{uid}_nir_cog.tif"
-
-        bounds = bounds_wgs84_from_path(band_files["B02"])
-        meta_common = {
-            "source_name": file.filename,
-            "status": "processing",
-            "cog_ready": False,
-            "extract_dir": str(extract_dir),
-            "from_zip": True,
-            "s2_band_pack": True,
-            "s2_composite": True,
-            "s2_stack_path": str(stack_tif),
-            "s2_stack_band_order": "B04,B03,B02,B08",
-            "s2_date_label": date_label,
-        }
-        if bounds:
-            meta_common["bounds_wgs84"] = list(bounds)
-
-        meta_rgb = {
-            **meta_common,
-            "composite_kind": "true_color",
-            "bands_rgb": "R=B04, G=B03, B=B02",
-            "derived_from_stack": True,
-        }
-        meta_nir = {
-            **meta_common,
-            "composite_kind": "false_color_nir",
-            "bands_rgb": "R=B08, G=B04, B=B03",
-            "derived_from_stack": True,
-        }
-
-        raster_rgb = RasterLayer(
-            project_id=project_id,
+    try:
+        return upload_raster_uc(
+            db,
             tenant_id=tenant_id,
-            name=name_rgb,
-            file_path=str(rgb_src),
-            cog_path=str(rgb_cog),
-            raster_metadata=meta_rgb,
-        )
-        raster_nir = RasterLayer(
             project_id=project_id,
-            tenant_id=tenant_id,
-            name=name_nir,
-            file_path=str(nir_src),
-            cog_path=str(nir_cog),
-            raster_metadata=meta_nir,
+            filename=file.filename,
+            file_obj=file.file,
         )
-        db.add(raster_rgb)
-        db.add(raster_nir)
-        db.commit()
-        db.refresh(raster_rgb)
-        db.refresh(raster_nir)
-
-        band_paths = {k: str(v) for k, v in band_files.items()}
-        process_s2_zip_layers.delay(
-            band_paths,
-            str(stack_tif),
-            str(rgb_src),
-            str(nir_src),
-            str(rgb_cog),
-            str(nir_cog),
-            raster_rgb.id,
-            raster_nir.id,
-        )
-
-        items = [
-            {
-                "id": raster_rgb.id,
-                "name": name_rgb,
-                "composite": "rgb",
-                "metadata": meta_rgb,
-            },
-            {
-                "id": raster_nir.id,
-                "name": name_nir,
-                "composite": "nir",
-                "metadata": meta_nir,
-            },
-        ]
-        return {
-            "raster_layer_id": raster_rgb.id,
-            "raster_layer_ids": [raster_rgb.id, raster_nir.id],
-            "layers": items,
-            "metadata": meta_rgb,
-        }
-
-    destination = out_dir / f"{uuid.uuid4().hex}{ext}"
-    with destination.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    cog_path = out_dir / f"{uuid.uuid4().hex}_cog.tif"
-    bounds = bounds_wgs84_from_path(destination)
-    meta: dict = {"source_name": file.filename, "status": "processing", "cog_ready": False}
-    if bounds:
-        meta["bounds_wgs84"] = list(bounds)
-    raster = RasterLayer(
-        project_id=project_id,
-        tenant_id=tenant_id,
-        name=file.filename,
-        file_path=str(destination),
-        cog_path=str(cog_path),
-        raster_metadata=meta,
-    )
-    db.add(raster)
-    db.commit()
-    db.refresh(raster)
-    process_raster.delay(str(destination), str(cog_path), raster.id)
-    return {"raster_layer_id": raster.id, "metadata": raster.raster_metadata}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/raster/{project_id}/{raster_layer_id}/preview")
@@ -1057,8 +658,10 @@ def get_raster_preview(
         "(log-scale + paleta RdYlGn). Ignora preview_rgb_bands.",
     ),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     raster = _get_project_raster(db, tenant_id, project_id, raster_layer_id)
     path = _existing_raster_path(raster)
     if not path.exists():
@@ -1105,7 +708,13 @@ def get_raster_preview(
 
 
 @router.get("/raster/{project_id}")
-def list_rasters(project_id: int, db: Session = Depends(get_db), tenant_id: int = Depends(tenant_from_jwt)):
+def list_rasters(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     rasters = (
         db.query(RasterLayer)
         .filter(RasterLayer.project_id == project_id, RasterLayer.tenant_id == tenant_id)
@@ -1122,6 +731,7 @@ def delete_raster(
     raster_id: int,
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
+    _admin: User = Depends(require_admin),
 ):
     raster = (
         db.query(RasterLayer)

@@ -8,8 +8,8 @@ import { sensorLabel } from "../dataAdapter";
 const CULTIVO_INDICES = ["NDVI", "KNDVI", "NDRE", "RSTRUCTURE", "EVI", "MSAVI2", "VARI", "GIYI", "MCARI", "CIre"];
 
 export default function CultivoAnalysisSection({
-  projectId,
-  token,
+  projectId: _projectId,
+  token: _token,
   adapted,
   sensor,
   onSensorChange,

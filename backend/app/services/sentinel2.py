@@ -21,14 +21,13 @@ from dateutil.relativedelta import relativedelta
 from shapely import from_wkt
 from shapely.geometry import mapping
 
-from app.services.cdse_client import (
+from app.domain.shared.ports import CdseAuthPort
+from app.infrastructure.cdse.client import (
     CATALOGUE_URL,
     STAC_SEARCH_URL,
-    TOKEN_URL,
-    get_copernicus_token,
+    CdseAuthAdapter,
     odata_cloud_cover_pct as _odata_cloud_cover_pct_shared,
 )
-from app.services.cdse_client import get_copernicus_credentials as _cdse_get_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +47,22 @@ def _count_month_slots(start: date, end: date) -> int:
     return max(n, 1)
 
 
-def get_copernicus_credentials() -> tuple[str, str]:
+def get_copernicus_credentials(auth: CdseAuthPort | None = None) -> tuple[str, str]:
     """
-    Usuario y contraseña CDSE (Copernicus Data Space Ecosystem) desde la configuración.
-    Mismas credenciales para descarga Sentinel-2 (``search_and_download_monthly``) y Sentinel-1
-    (token OAuth + OData): variables ``COPERNICUS_USER`` y ``COPERNICUS_PASSWORD`` en ``.env``.
+    Usuario y contraseña CDSE desde settings vía ``CdseAuthPort``.
     """
     from app.core.config import settings
 
-    return _cdse_get_credentials(settings)
+    return (auth or CdseAuthAdapter()).credentials_from_settings(settings)
+
+
+def get_copernicus_token(
+    username: str,
+    password: str,
+    auth: CdseAuthPort | None = None,
+) -> str:
+    """Token Bearer CDSE vía ``CdseAuthPort`` (default ``CdseAuthAdapter``)."""
+    return (auth or CdseAuthAdapter()).access_token(username, password)
 
 
 def _product_covers_area(product: dict, aoi_geom) -> bool:
@@ -284,6 +290,7 @@ def search_and_download_monthly(
     copernicus_user: str,
     copernicus_password: str,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    auth: CdseAuthPort | None = None,
 ) -> dict:
     """
     Download all S2 L2A (MSIL2A) products per month that:
@@ -326,7 +333,7 @@ def search_and_download_monthly(
         _report(f"Buscando imagenes: {start_str} (mes {month_index + 1}/{total_months})", 0.2)
 
         try:
-            token = get_copernicus_token(copernicus_user, copernicus_password)
+            token = get_copernicus_token(copernicus_user, copernicus_password, auth=auth)
             session = requests.Session()
             session.verify = False
             session.headers.update({"Authorization": f"Bearer {token}"})

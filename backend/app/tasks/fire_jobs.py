@@ -13,7 +13,7 @@ def fire_download_s2(self, order_id: int, db_url: str) -> dict:
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.models import FireOrder
-    from app.modules.fire.download_s2 import run_fire_s2_download
+    from app.application.fire.download_s2 import DownloadFireS2
 
     engine = create_engine(db_url)
     Session = sessionmaker(bind=engine)
@@ -53,7 +53,7 @@ def fire_download_s2(self, order_id: int, db_url: str) -> dict:
             order.data_root = data_root
             db.commit()
 
-        result = run_fire_s2_download(
+        result = DownloadFireS2().execute(
             geometry=order.geometry_geojson,
             pre_start=order.pre_start.isoformat(),
             pre_end=order.pre_end.isoformat(),
@@ -104,10 +104,10 @@ def fire_process_dnbr(self, order_id: int, db_url: str) -> dict:
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.orm.attributes import flag_modified
 
+    from app.application.fire.process_dnbr import ProcessDnbrPipeline
     from app.core.config import settings
     from app.models.models import FireOrder
     from app.modules.fire.aoi_io import order_paths, write_order_aoi_gpkg
-    from app.modules.fire.process_dnbr import run_dnbr_pipeline
 
     engine = create_engine(db_url)
     Session = sessionmaker(bind=engine)
@@ -144,7 +144,7 @@ def fire_process_dnbr(self, order_id: int, db_url: str) -> dict:
             meta={"progress": 20, "message": order.process_message, "phase": "fire_dnbr"},
         )
 
-        result = run_dnbr_pipeline(
+        result = ProcessDnbrPipeline().execute(
             aoi_path=paths["aoi"],
             s2_root=s2_root,
             output_dir=results_root,

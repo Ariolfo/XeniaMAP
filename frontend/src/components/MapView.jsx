@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { buildBaseStyle } from "../utils/geo";
-import {
-  ensureFireHotspotStarIcon,
-  ensureFireLiveHotspotIcons,
-  resolveFireStarImageId,
-} from "../utils/fireMapIcons";
+import { buildBaseStyle, applyBasemap, isBasemapLayerId } from "../utils/geo";
 
 function rectangleFeatureCollection(c1, c2) {
   const w = Math.min(c1[0], c2[0]);
@@ -53,24 +48,18 @@ const SAT_SRC = "_fire_basemap_satellite_src";
 const ESRI_SAT_TILES =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
-function isBaseStyleLayerId(id) {
-  return id === "osm" || id === "esri" || id === "labels";
-}
-
 export default function MapView({
   mapRef,
   mapLayers,
   mapLayersRef,
-  projectId,
-  token,
+  projectId: _projectId,
+  token: _token,
   baseStyle,
-  setBaseStyle,
   studyDraw = null,
 }) {
   const containerRef = useRef(null);
-  const [showBaseOptions, setShowBaseOptions] = useState(false);
+  const [mapInitError, setMapInitError] = useState(null);
   const rasterBlobUrlsRef = useRef(new Map());
-  const rasterFetchInFlightRef = useRef(new Set());
   const polygonPtsRef = useRef([]);
   const rectCornerRef = useRef(null);
   const drawCompleteRef = useRef(null);
@@ -110,117 +99,58 @@ export default function MapView({
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    mapRef.current = new maplibregl.Map({
-      container: containerRef.current,
-      style: buildBaseStyle("vectorial"),
-      center: [-74.2973, 4.5709],
-      zoom: 5.5,
-    });
-    mapRef.current.addControl(new maplibregl.NavigationControl(), "top-right");
-  }, []);
+    try {
+      mapRef.current = new maplibregl.Map({
+        container: containerRef.current,
+        style: buildBaseStyle("vectorial"),
+        center: [-74.2973, 4.5709],
+        zoom: 5.5,
+        transformRequest: (url, resourceType) => {
+          if (
+            (resourceType === "Tile" || resourceType === "Image") &&
+            typeof url === "string" &&
+            ((url.includes("/fire-orders/") && url.includes("/results/tiles/")) ||
+              (url.includes("/layers/") && url.includes("/tiles/") && url.includes(".mvt")))
+          ) {
+            const access = sessionStorage.getItem("xeniamap_access");
+            if (access) {
+              return {
+                url,
+                headers: { Authorization: `Bearer ${access}` },
+              };
+            }
+          }
+          return { url };
+        },
+      });
+      mapRef.current.addControl(new maplibregl.NavigationControl(), "top-right");
+      setMapInitError(null);
+    } catch (err) {
+      mapRef.current = null;
+      const msg =
+        err?.message ||
+        (typeof err === "string" ? err : null) ||
+        "No se pudo inicializar el mapa (WebGL).";
+      setMapInitError(String(msg));
+      console.error("MapView: fallo al crear MapLibre", err);
+    }
+    return () => {
+      try {
+        mapRef.current?.remove?.();
+      } catch (_) {}
+      mapRef.current = null;
+    };
+  }, [mapRef]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-
-    for (const [, url] of rasterBlobUrlsRef.current.entries()) {
-      URL.revokeObjectURL(url);
-    }
-    rasterBlobUrlsRef.current.clear();
-    try {
-      mapLayersRef.current.forEach((l) => {
-        if (l.kind !== "raster") return;
-        if (map.getLayer(l.id)) map.removeLayer(l.id);
-        if (map.getSource(l.id)) map.removeSource(l.id);
-      });
-    } catch (_) {
-      /* style may be invalid mid-switch */
-    }
-
-    map.setStyle(buildBaseStyle(baseStyle));
-    const repaint = () => {
+    const swap = () => {
       if (!map.isStyleLoaded()) return;
-      mapLayersRef.current.forEach((l) => {
-        if (!l.geojsonData) return;
-        if (map.getSource(l.id)) {
-          try {
-            map.removeLayer(l.id + "_outline");
-          } catch (_) {}
-          try {
-            map.removeLayer(l.id);
-          } catch (_) {}
-          map.removeSource(l.id);
-        }
-        const isAoi = l.metadata?.fireRole === "aoi";
-        const starSymbol = l.metadata?.fireSymbol;
-        const isHotspotStar =
-          !!starSymbol ||
-          l.metadata?.fireRole === "hotspot" ||
-          l.metadata?.fireRole === "hotspots_24h" ||
-          l.metadata?.fireRole === "hotspots_48h";
-        map.addSource(l.id, { type: "geojson", data: l.geojsonData });
-        if (isHotspotStar) {
-          ensureFireHotspotStarIcon(map);
-          ensureFireLiveHotspotIcons(map);
-          const iconId = resolveFireStarImageId(starSymbol || "star");
-          const iconSize = l.metadata?.fireIconSize ?? (starSymbol === "star" || !starSymbol ? 0.9 : 0.7);
-          const iconOpacity = l.metadata?.fireIconOpacity ?? 1;
-          map.addLayer({
-            id: l.id,
-            type: "symbol",
-            source: l.id,
-            layout: {
-              "icon-image": iconId,
-              "icon-size": iconSize,
-              "icon-allow-overlap": true,
-              "icon-ignore-placement": true,
-              visibility: l.visible ? "visible" : "none",
-            },
-            paint: {
-              "icon-opacity": iconOpacity,
-            },
-          });
-          return;
-        }
-        const fillOpacity =
-          l.metadata?.fireFillOpacity ?? (isAoi ? 0 : 0.35);
-        const fillColor =
-          l.metadata?.fireFillColor || (isAoi ? "#dc2626" : "#2d6cdf");
-        const lineColor =
-          l.metadata?.fireLineColor || (isAoi ? "#dc2626" : "#1a3f8c");
-        const lineWidth = l.metadata?.fireLineWidth ?? (isAoi ? 3 : 2);
-        map.addLayer({
-          id: l.id,
-          type: "fill",
-          source: l.id,
-          paint: { "fill-color": fillColor, "fill-opacity": fillOpacity },
-          layout: { visibility: l.visible ? "visible" : "none" },
-        });
-        map.addLayer({
-          id: l.id + "_outline",
-          type: "line",
-          source: l.id,
-          paint: {
-            "line-color": lineColor,
-            "line-width": lineWidth,
-            "line-opacity": 1,
-          },
-          layout: { visibility: l.visible ? "visible" : "none" },
-        });
-      });
+      applyBasemap(map, baseStyle);
     };
-    const onStyleReady = () => {
-      repaint();
-    };
-    map.once("style.load", onStyleReady);
-    if (map.isStyleLoaded()) {
-      repaint();
-    }
-    return () => {
-      try {
-        map.off("style.load", onStyleReady);
-      } catch (_) {}
-    };
+    if (map.isStyleLoaded()) swap();
+    else map.once("style.load", swap);
   }, [baseStyle]);
 
   useEffect(() => {
@@ -230,7 +160,11 @@ export default function MapView({
     const paintFireRasters = () => {
       if (!map.isStyleLoaded()) return;
       const fireRasters = (mapLayersRef.current || []).filter(
-        (l) => l.kind === "raster" && l.metadata?.firePreview && Array.isArray(l.metadata?.bounds)
+        (l) =>
+          l.kind === "raster" &&
+          l.metadata?.firePreview &&
+          Array.isArray(l.metadata?.bounds) &&
+          (l.metadata?.tileTemplate || l.metadata?.previewBlobUrl || l.metadata?.pngBase64)
       );
       const keep = new Set(fireRasters.map((l) => l.id));
 
@@ -246,13 +180,48 @@ export default function MapView({
 
       for (const layer of fireRasters) {
         const [w, s, e, n] = layer.metadata.bounds;
+        const tileTemplate = layer.metadata.tileTemplate || null;
+
+        try {
+          if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+          if (map.getSource(layer.id)) map.removeSource(layer.id);
+        } catch (_) {}
+
+        if (tileTemplate) {
+          try {
+            map.addSource(layer.id, {
+              type: "raster",
+              tiles: [tileTemplate],
+              tileSize: 256,
+              bounds: [w, s, e, n],
+              minzoom: 0,
+              maxzoom: 22,
+            });
+            map.addLayer({
+              id: layer.id,
+              type: "raster",
+              source: layer.id,
+              paint: { "raster-opacity": 0.85 },
+              layout: { visibility: layer.visible ? "visible" : "none" },
+            });
+          } catch (_) {
+            /* style busy */
+          }
+          continue;
+        }
+
         const coordinates = [
           [w, n],
           [e, n],
           [e, s],
           [w, s],
         ];
+        const metaUrl = layer.metadata.previewBlobUrl || null;
         let url = rasterBlobUrlsRef.current.get(layer.id);
+        if (metaUrl && url !== metaUrl) {
+          url = metaUrl;
+          rasterBlobUrlsRef.current.set(layer.id, url);
+        }
         if (!url && layer.metadata.pngBase64) {
           try {
             const bin = atob(layer.metadata.pngBase64);
@@ -265,10 +234,6 @@ export default function MapView({
           }
         }
         if (!url) continue;
-        try {
-          if (map.getLayer(layer.id)) map.removeLayer(layer.id);
-          if (map.getSource(layer.id)) map.removeSource(layer.id);
-        } catch (_) {}
         try {
           map.addSource(layer.id, { type: "image", url, coordinates });
           map.addLayer({
@@ -297,7 +262,7 @@ export default function MapView({
 
     if (map.isStyleLoaded()) paintFireRasters();
     else map.once("style.load", paintFireRasters);
-  }, [mapLayers, baseStyle]);
+  }, [mapLayers]);
 
   // Imagen satelital (Esri) como capa conmutable bajo las capas Fire.
   useEffect(() => {
@@ -351,7 +316,7 @@ export default function MapView({
           }
         }
         const styleLayers = map.getStyle()?.layers || [];
-        const firstOverlay = styleLayers.find((l) => !isBaseStyleLayerId(l.id));
+        const firstOverlay = styleLayers.find((l) => !isBasemapLayerId(l.id));
         const beforeId = firstOverlay?.id;
         const layerDef = {
           id: layerId,
@@ -377,7 +342,7 @@ export default function MapView({
         try {
           const styleLayers = map.getStyle()?.layers || [];
           const firstOverlay = styleLayers.find(
-            (l) => !isBaseStyleLayerId(l.id) && l.id !== layerId && l.source !== SAT_SRC
+            (l) => !isBasemapLayerId(l.id) && l.id !== layerId && l.source !== SAT_SRC
           );
           if (firstOverlay?.id) map.moveLayer(layerId, firstOverlay.id);
         } catch (_) {}
@@ -476,52 +441,17 @@ export default function MapView({
 
   return (
     <main className="map-container">
-      <div className="map-base-control">
-        <button
-          className="layers-toggle"
-          type="button"
-          onClick={() => setShowBaseOptions((prev) => !prev)}
-          aria-label="Cambiar mapa base"
-          title="Capas de mapa"
-        >
-          <span className="layers-icon" />
-        </button>
-        {showBaseOptions ? (
-          <div className="layers-menu">
-            <button
-              type="button"
-              className={baseStyle === "vectorial" ? "active" : ""}
-              onClick={() => {
-                setBaseStyle("vectorial");
-                setShowBaseOptions(false);
-              }}
-            >
-              Vectorial
-            </button>
-            <button
-              type="button"
-              className={baseStyle === "satelital" ? "active" : ""}
-              onClick={() => {
-                setBaseStyle("satelital");
-                setShowBaseOptions(false);
-              }}
-            >
-              Satelital
-            </button>
-            <button
-              type="button"
-              className={baseStyle === "hibrido" ? "active" : ""}
-              onClick={() => {
-                setBaseStyle("hibrido");
-                setShowBaseOptions(false);
-              }}
-            >
-              Hibrido
-            </button>
-          </div>
-        ) : null}
-      </div>
-      <div className="map" ref={containerRef} />
+      {mapInitError ? (
+        <div className="map-webgl-fallback" role="alert">
+          <h2>No se pudo cargar el mapa</h2>
+          <p>
+            El navegador no pudo crear un contexto WebGL (necesario para MapLibre). Activa la
+            aceleración por hardware o prueba otro navegador / perfil.
+          </p>
+          <p className="map-webgl-fallback-detail">{mapInitError}</p>
+        </div>
+      ) : null}
+      <div className="map" ref={containerRef} style={mapInitError ? { display: "none" } : undefined} />
     </main>
   );
 }

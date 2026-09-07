@@ -1,0 +1,1 @@
+"""Dominio Fire (severidad / FIRMS)."""

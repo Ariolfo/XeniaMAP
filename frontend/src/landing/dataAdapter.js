@@ -98,7 +98,7 @@ function formatRange(start, end) {
   if (!start && !end) return "—";
   const fmt = (iso) => {
     if (!iso) return "—";
-    const [y, m, d] = iso.split("-");
+    const [y, m] = iso.split("-");
     const months = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
     return `${months[Number(m) - 1] || m}/${y?.slice(2) || y}`;
   };

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from app.modules.fire.firms_live import _hotspots_to_feature_collections
+from app.application.fire.firms_live import split_hotspots_by_age as _hotspots_to_feature_collections
 import geopandas as gpd
 from shapely.geometry import box
 

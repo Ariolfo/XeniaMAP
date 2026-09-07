@@ -1783,6 +1783,19 @@ def main() -> dict:
         water_mask_path=water_mask_path,
     )
 
+    # F6: dNBR / severity como COG (tiles XYZ MapLibre); RGB ya salen con driver=COG.
+    try:
+        from app.infrastructure.raster.cog import ensure_fire_analysis_cogs
+
+        cogged = ensure_fire_analysis_cogs(
+            dnbr_path if WRITE_DNBR else None,
+            severity_path if WRITE_SEVERITY else None,
+        )
+        if cogged:
+            print(f"[COG] Cloud-optimized: {', '.join(Path(p).name for p in cogged)}")
+    except Exception as cog_exc:
+        print(f"[COG] WARNING: could not optimize dNBR/severity: {cog_exc}")
+
     candidates: Optional[gpd.GeoDataFrame] = None
     if WRITE_BURNED_POLYGONS:
         print("\n[VECTOR] Polygonising dNBR burn candidates")

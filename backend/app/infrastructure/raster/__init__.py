@@ -1,0 +1,1 @@
+"""Paquete infrastructure.raster."""

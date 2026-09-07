@@ -1104,17 +1104,6 @@ export default function AdvancedDashboard({
     setSoilClusterDragging(false);
   };
 
-  async function ensureRecortes(sensor) {
-    if (sensor !== "s2" && sensor !== "ps") return [];
-    if (recortesCacheRef.current[sensor]) return recortesCacheRef.current[sensor];
-    const pv = sensor === "ps" ? "ps" : "s2";
-    if (effectiveToken) setAuthToken(effectiveToken);
-    const inv = await api.get(`/preprocess/recortes-inventory/${projectId}?pipeline_variant=${pv}`);
-    const paths = (inv.data?.items || []).map((x) => x.relative_path).filter(Boolean);
-    recortesCacheRef.current[sensor] = paths;
-    return paths;
-  }
-
   async function loadSeriesForSensor(sensor, options = {}) {
     const { forceRefresh = false } = options;
     const key = `${sensor}|${projectId}|${selectionKey}`;

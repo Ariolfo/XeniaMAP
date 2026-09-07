@@ -179,7 +179,7 @@ function formatBlocks(text) {
   return blocks;
 }
 
-function ReportFigure({ src, alt, caption, keyPrefix }) {
+function ReportFigure({ src, alt, caption, keyPrefix: _keyPrefix }) {
   return (
     <figure className="adv-ia-figure">
       <img
@@ -236,7 +236,6 @@ export default function DashboardIaAnalysisModal({ open, onClose, iaContext, emb
   const {
     fullReport,
     isCustom,
-    reportLoading,
     reportReady: markdownReady,
     integralLoading,
     integralError,

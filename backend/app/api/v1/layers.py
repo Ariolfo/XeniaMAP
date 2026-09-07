@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import shutil
 import uuid
@@ -7,14 +8,25 @@ from pathlib import Path
 
 from defusedxml.ElementTree import fromstring as safe_xml_parse
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
-from app.api.deps import tenant_from_jwt
+from app.api.deps import (
+    get_current_user,
+    require_project_dashboard_access,
+    tenant_from_jwt,
+)
 from app.api.v1.helpers import _tenant_storage, validate_upload_size
+from app.application.agro.layer_mvt import (
+    MVT_SOURCE_LAYER,
+    RenderLayerMvtTile,
+    SyncLayerGeom,
+    layer_geom_meta,
+)
 from app.db.session import get_db
-from app.models.models import Layer, Project
+from app.models.models import Layer, Project, User
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -51,22 +63,42 @@ async def upload_shapefile(
     db.add(layer)
     db.commit()
     db.refresh(layer)
-    return {"layer_id": layer.id}
+    sync_meta: dict = {"mvt_ready": False, "bbox": None}
+    try:
+        sync_meta = SyncLayerGeom().execute(db, layer=layer)
+    except Exception as exc:
+        logger.warning("upload-shapefile: sync geom falló layer=%s: %s", layer.id, exc)
+    return {
+        "layer_id": layer.id,
+        "mvt_ready": bool(sync_meta.get("mvt_ready")),
+        "bbox": sync_meta.get("bbox"),
+        "mvt_source_layer": MVT_SOURCE_LAYER,
+    }
 
 
 @router.get("/layers/{project_id}")
-def list_layers(project_id: int, db: Session = Depends(get_db), tenant_id: int = Depends(tenant_from_jwt)):
+def list_layers(
+    project_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     layers = (
         db.query(Layer)
         .filter(Layer.project_id == project_id, Layer.tenant_id == tenant_id)
         .all()
     )
+    meta_by_id = layer_geom_meta(db, layer_ids=[l.id for l in layers])
     return [
         {
             "id": l.id,
             "name": l.name,
             "geom_type": l.geom_type,
             "metadata": l.layer_metadata,
+            "mvt_ready": bool(meta_by_id.get(l.id, {}).get("mvt_ready")),
+            "bbox": meta_by_id.get(l.id, {}).get("bbox"),
+            "mvt_source_layer": MVT_SOURCE_LAYER,
         }
         for l in layers
     ]
@@ -130,8 +162,10 @@ def get_layer_geojson(
     project_id: int,
     layer_id: int,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     layer = (
         db.query(Layer)
         .filter(Layer.id == layer_id, Layer.project_id == project_id, Layer.tenant_id == tenant_id)
@@ -177,3 +211,74 @@ def get_layer_geojson(
         except Exception:
             pass
     raise HTTPException(status_code=422, detail="Cannot convert this layer to GeoJSON")
+
+
+@router.post("/layers/{project_id}/{layer_id}/sync-geom")
+def sync_layer_geom(
+    project_id: int,
+    layer_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    """Backfill ``layers.geom`` desde el archivo en disco (admin o dashboard)."""
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    layer = (
+        db.query(Layer)
+        .filter(Layer.id == layer_id, Layer.project_id == project_id, Layer.tenant_id == tenant_id)
+        .first()
+    )
+    if not layer:
+        raise HTTPException(status_code=404, detail="Layer not found")
+    try:
+        out = SyncLayerGeom().execute(db, layer=layer)
+    except Exception as exc:
+        logger.exception("sync-geom falló layer=%s", layer_id)
+        raise HTTPException(status_code=500, detail=f"sync-geom failed: {exc}") from exc
+    if not out.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail=out.get("detail") or "Cannot sync layer geometry",
+        )
+    return {
+        "layer_id": layer_id,
+        "mvt_ready": True,
+        "bbox": out.get("bbox"),
+        "mvt_source_layer": MVT_SOURCE_LAYER,
+    }
+
+
+@router.get("/layers/{project_id}/{layer_id}/tiles/{z}/{x}/{y}.mvt")
+def get_layer_mvt_tile(
+    project_id: int,
+    layer_id: int,
+    z: int,
+    x: int,
+    y: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    """Vector tile Mapbox (MVT) desde ``layers.geom`` (PostGIS ``ST_AsMVT``)."""
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    layer = (
+        db.query(Layer)
+        .filter(Layer.id == layer_id, Layer.project_id == project_id, Layer.tenant_id == tenant_id)
+        .first()
+    )
+    if not layer:
+        raise HTTPException(status_code=404, detail="Layer not found")
+    try:
+        payload = RenderLayerMvtTile().execute(db, layer=layer, z=z, x=x, y=y)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Layer geometry not available for MVT") from None
+    except Exception as exc:
+        logger.exception("mvt tile falló layer=%s z=%s x=%s y=%s", layer_id, z, x, y)
+        raise HTTPException(status_code=500, detail=f"MVT render failed: {exc}") from exc
+    return Response(
+        content=payload,
+        media_type="application/vnd.mapbox-vector-tile",
+        headers={"Cache-Control": "private, max-age=60"},
+    )

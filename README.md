@@ -1,154 +1,152 @@
-# XeniaMAP SaaS MVP
+# XeniaMAP
 
-MVP funcional para portal geoespacial agrícola con arquitectura SaaS multi-tenant:
+Portal geoespacial agrícola multi-tenant (Agro + Fire).
 
-- Backend `FastAPI` + `Celery` + `Redis`
-- IA en microservicio Python (`PyTorch`, `OpenCV`, `rasterio`)
-- Base espacial `PostgreSQL + PostGIS + postgis_raster`
-- Frontend `React + Vite + MapLibre GL`
-- Observabilidad con `Prometheus + Grafana`
+- Backend: **FastAPI** + **Celery** + **Redis**
+- Frontend: **React + Vite + MapLibre GL** (no Mapbox)
+- BD: **PostgreSQL + PostGIS** (geometría de app mayormente GeoJSON/disco; PostGIS disponible)
+- Disco de datos grandes: **Data_XeniaMap** (`EXTERNAL_DATA_HOST_PATH`)
+- Arquitectura: monolito modular + hexagonal por fases → [`docs/architecture.md`](docs/architecture.md)
+- Bootstrap BD (init + Alembic) → [`docs/ops/bootstrap.md`](docs/ops/bootstrap.md)
+- Imágenes Docker (build, sin pip/npm en cada up) → [`docs/ops/docker.md`](docs/ops/docker.md)
+- Roadmap Hexagonal + Modular (checkpoint) → [`docs/ops/hexagonal_modular_roadmap_checkpoint_2026-09-06.md`](docs/ops/hexagonal_modular_roadmap_checkpoint_2026-09-06.md)
+- Storage espacial (híbrido) → [`docs/ops/adr-001-storage-hybrid.md`](docs/ops/adr-001-storage-hybrid.md)
+- Permisos cliente × ownership → [`docs/ops/permissions_cliente.md`](docs/ops/permissions_cliente.md)
+- Nombres legacy BioAgro → [`docs/ops/legacy_names.md`](docs/ops/legacy_names.md)
 
 ## Estructura
 
 ```text
-/backend
-/ai_service
-/frontend
-/infrastructure
+/backend          # FastAPI, Celery, domain/application/infrastructure
+/frontend         # React + MapLibre
+/ai_service       # Stub opcional (perfil Docker ``ai``); no requerido para Agro/Fire
+/infrastructure   # Postgres init, Prometheus, K8s
 /scripts
-/data
+/docs             # ops + architecture
+/data             # storage local (gitignored)
 ```
 
 ## Requisitos
 
 - Docker + Docker Compose
-- (Opcional local) Ubuntu/Debian para script de PostgreSQL local
+- (Opcional) ngrok con dominio reservado `xeniamap.ngrok.app`
+- (Opcional) carpeta host `Data_XeniaMap` (p. ej. `/mnt/disco3tb/Data_XeniaMap`)
 
-## Opcion 1: levantar con Docker (recomendado)
+## Levantar el stack (Docker)
 
-1. Copiar variables:
-   - `cp .env.example .env`
-2. Levantar stack:
-   - `docker compose up -d`
-   ## docker compose ps
-3. Generar raster de ejemplo:
-   - `docker compose exec backend python -c "import numpy as np,rasterio; from rasterio.transform import from_origin; import pathlib; p=pathlib.Path('/data/sample/agri_sample.tif'); p.parent.mkdir(parents=True,exist_ok=True); d=(np.random.rand(256,256)*255).astype('uint8'); t=from_origin(-74.2,4.8,0.0005,0.0005); with rasterio.open(p,'w',driver='GTiff',height=256,width=256,count=1,dtype=d.dtype,crs='EPSG:4326',transform=t) as dst: dst.write(d,1); print(p)"`
-4. Servicios:
-   - Backend: `http://localhost:8000/docs`
-   - IA: `http://localhost:8001/docs`
-   - Frontend: `http://localhost:5173`
-   - Prometheus: `http://localhost:9090`
-   - Grafana: `http://localhost:3000`
-5. PostgreSQL expuesto en host:
-   - `localhost:5433`
-
-En el contenedor `backend`, `rasterio` y el resto de dependencias ya vienen instalados desde `backend/requirements.txt`.
-
-### Backend con venv local (sin Docker)
-
-Si corres la API en la máquina host, no uses el `python3` del sistema a pelo: instala el entorno del proyecto:
+Guía de imágenes prebuilt (sin pip/npm en cada `up`): **[`docs/ops/docker.md`](docs/ops/docker.md)**.  
+Bootstrap de esquema (init + Alembic): [`docs/ops/bootstrap.md`](docs/ops/bootstrap.md).
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -c "import rasterio; print('rasterio', rasterio.__version__)"
-```
+cd /path/to/XeniaMAP
 
-`rasterio` está fijado en `requirements.txt`. Si el comando anterior falla, revisa que estés en el venv activado o, con Docker, usa el mismo intérprete que el servicio: `docker compose exec backend python -c "import rasterio"`.
+cp -n .env.example .env
+# Obligatorio: SECRET_KEY
+# Local sin SMTP: OTP_SIMULATE=1
+# Bootstrap admin (opcional): ADMIN_EMAILS=tu@correo
+# Datos: EXTERNAL_DATA_HOST_PATH=/mnt/disco3tb/Data_XeniaMap
+# Fire: FIRMS_MAP_KEY=...
 
-## Opcion 2: PostgreSQL/PostGIS local Linux
+# Volumen Postgres (nombre legacy intencional — no renombrar sin plan dual)
+docker volume inspect bioagromap_postgres_data >/dev/null 2>&1 || \
+  docker volume create bioagromap_postgres_data
 
-```bash
-chmod +x scripts/setup_postgis_local.sh
-./scripts/setup_postgis_local.sh
-```
-
-Este script instala PostgreSQL, habilita extensiones `postgis` y `postgis_raster`, crea base y aplica esquema.
-
-## Despliegue: Vercel (frontend) y Render (API + Celery)
-
-### Render (backend)
-
-1. En [Render](https://render.com): **New → Blueprint**, conecta este repositorio y deja que use `render.yaml` en la raíz.
-2. El blueprint crea Postgres, Redis (Key Value) y un servicio web `xeniamap-api` que ejecuta migraciones, **Celery y FastAPI en el mismo dyno** (así comparten el mismo filesystem local; en Render no se puede compartir un disco entre un web y un worker separados sin almacenamiento externo).
-3. Cuando el deploy termine, copia la URL pública del servicio (p. ej. `https://xeniamap-api.onrender.com`).
-4. Variables que puedes ajustar en el dashboard: `CORS_ORIGINS` (añade tu dominio de producción si no es `*.vercel.app`), `MAX_UPLOAD_MB`, `COPERNICUS_*` si usas descargas Sentinel, etc. `CORS_ORIGIN_REGEX` por defecto permite orígenes `https://…vercel.app` (incluye previews).
-
-### Vercel (frontend)
-
-1. **New Project** en [Vercel](https://vercel.com), mismo repositorio.
-2. **Root Directory**: `frontend` (importante: el `package.json` del cliente está ahí).
-3. **Environment variables** (Production y Preview): `VITE_API_URL` = la URL del API en Render **sin barra final** (p. ej. `https://xeniamap-api.onrender.com`). El cliente añade `/api/v1` automáticamente.
-4. `frontend/vercel.json` define la regla SPA para React Router (todas las rutas van a `index.html`).
-
-El microservicio de IA (`ai_service`) y Mapbox no forman parte de este blueprint; en local siguen en Docker Compose.
-
-## Endpoints clave (`/api/v1`)
-
-- `POST /auth/register`
-- `POST /auth/login`
-- `POST /projects`
-- `GET /projects`
-- `POST /upload-shapefile`
-- `POST /upload-raster`
-- `GET /raster/{project_id}`
-- `POST /ai/predict`
-- `GET /ai/results/{project_id}`
-
-## Flujo end-to-end
-
-1. Registrar usuario (crea tenant)
-2. Login
-3. Crear proyecto
-4. Subir raster/shapefile
-   - Vector de ejemplo: `data/sample/fields.geojson`
-   - Raster de ejemplo: `/data/sample/agri_sample.tif` (paso de generacion)
-5. Procesamiento async (Celery)
-6. Ejecutar prediccion IA
-7. Visualizar resultados en frontend
-
-## Multi-tenancy
-
-- Cada entidad funcional usa `tenant_id`
-- El middleware de autenticacion extrae tenant desde JWT
-- Consultas filtran por tenant para aislamiento lógico
-
-## Raster y geoprocesamiento
-
-- Soporta subida de `GeoTIFF`, `JP2`, `PNG`, `JPG`
-- Worker crea variante tipo COG (GTiff comprimido + tiled)
-- Metadatos raster/vector se guardan en PostGIS
-
-## Testing
-
-Backend:
-
-```bash
-cd backend
-pip install -r requirements.txt
-pytest -q
-```
-
-## CI/CD
-
-`/.github/workflows/ci.yml` ejecuta tests de backend en cada push/PR.
-
-## Produccion (base)
-
-- Manifest K8s inicial en `infrastructure/k8s/backend-deployment.yaml`
-- Escalado horizontal del backend mediante replicas
-- Recomendada separacion en imagenes versionadas por servicio
-
-## Desarrollo local (resumen)
-
-```bash
+# Primera vez o tras cambiar requirements.txt / package-lock.json
+docker compose build
 docker compose up -d
+
+# Obligatorio tras up: Alembic (init.sql solo en volumen vacío)
+docker compose exec backend alembic upgrade head
+
+docker compose ps
 ```
 
-- Frontend: `http://localhost:5173`
-- API docs: `http://localhost:8000/docs`
+| Cambio | Rebuild |
+|--------|---------|
+| Solo `.py` / `.jsx` | no hace falta |
+| `backend/requirements.txt` | `docker compose build backend worker` |
+| `frontend/package-lock.json` | `docker compose build frontend` (ver [`docker.md`](docs/ops/docker.md) si hay que resetear `node_modules`) |
 
-Túnel público / ngrok: ver runbook privado en `docs/ops/ngrok.md` (no es parte del producto).
+Stub IA (opcional): `docker compose --profile ai up -d --build ai_service`
 
+### URLs locales
+
+| Servicio   | URL |
+|------------|-----|
+| Frontend   | http://localhost:5173 |
+| API docs   | http://localhost:8000/docs |
+| Health     | http://localhost:8000/health |
+| Prometheus | http://localhost:9090 |
+| Grafana    | http://localhost:3000 |
+| Postgres   | localhost:5433 |
+
+### Auth (F0)
+
+- Producción: `OTP_SIMULATE=0` + `SMTP_*` (código por correo; sin `debug_otp` en API)
+- Desarrollo: `OTP_SIMULATE=1` (código aleatorio + `debug_otp` solo en ese modo)
+- Admins bootstrap: `ADMIN_EMAILS` (coma-separados); el rol en DB manda para usuarios existentes
+
+### Disco externo Data_XeniaMap
+
+```bash
+# Host: /mnt/disco3tb/Data_XeniaMap  (o symlink desde Data_Bioagro)
+# Compose: EXTERNAL_DATA_HOST_PATH → /data_xeniamap
+```
+
+### Comandos útiles
+
+```bash
+docker compose logs -f backend worker frontend
+docker compose restart backend worker
+docker compose -f docker-compose.yml -f docker-compose.snap.yml up -d worker   # SNAP S1
+docker compose down
+```
+
+## Túnel ngrok
+
+Runbook: [`docs/ops/ngrok.md`](docs/ops/ngrok.md).
+
+```bash
+ngrok http --url=xeniamap.ngrok.app 5173
+```
+
+## Backend local (venv)
+
+```bash
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+export DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/xeniamap
+export REDIS_URL=redis://localhost:6379/0
+export SECRET_KEY=dev-local-xeniamap-change-me
+export OTP_SIMULATE=1
+export EXTERNAL_DATA_ROOT=/mnt/disco3tb/Data_XeniaMap
+uvicorn app.main:app --reload --port 8000
+```
+
+## Despliegue: Vercel + Render
+
+Ver secciones en este README histórico / `render.yaml`. Variables clave: `SECRET_KEY`, `CORS_ORIGINS`, `SMTP_*`, `ADMIN_EMAILS`, `FIRMS_MAP_KEY`, `VITE_API_URL`.
+
+## Endpoints útiles (`/api/v1`)
+
+- Auth: `POST /auth/check-email`, `/auth/request-otp`, `/auth/verify-otp`, `/auth/login`
+- Fire: `GET /fire-orders/{id}/results`, `.../preview`, `.../tiles/{z}/{x}/{y}.png`, `.../firms-live`
+- Agro: projects, preprocess, rasters, soilplus
+
+## Mapa Fire
+
+- Capas lazy (GeoJSON/preview bajo demanda)
+- Rasters vía **XYZ tiles** (COG RGB / severity / dNBR) + FIRMS cache
+- Basemap sin `setStyle` completo (`applyBasemap`)
+
+## Testing / CI
+
+```bash
+cd backend
+export SECRET_KEY=test-secret-key-for-ci OTP_SIMULATE=1
+PYTHONPATH=. pytest -q
+```
+
+CI (`.github/workflows/ci.yml`): ruff + pytest + eslint (mapa) + frontend build + docs-check.
+Detalle: [`docs/ops/quality.md`](docs/ops/quality.md).

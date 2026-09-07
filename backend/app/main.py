@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 import redis as redis_lib
 from fastapi import FastAPI, Request
@@ -10,6 +11,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app.api.v1.routes import router as v1_router
 from app.core.config import get_max_upload_mb, settings
 from app.core.security import decode_token
+
 logging.basicConfig(level=logging.INFO)
 audit_logger = logging.getLogger("audit")
 logger = logging.getLogger(__name__)
@@ -25,9 +27,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Fire-Bounds", "X-Fire-Filename"],
 )
 app.include_router(v1_router, prefix=settings.api_v1_prefix)
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+# Cliente: solo list + preview (no browse/inventory admin bajo /raster/*).
+_CLIENTE_RASTER_GET_RE = re.compile(
+    rf"^{re.escape(settings.api_v1_prefix)}/raster/\d+(?:/\d+/preview)?/?$"
+)
 
 
 @app.on_event("startup")
@@ -59,10 +67,11 @@ def _is_cliente_allowed_request(request: Request) -> bool:
         return True
     if path.startswith(f"{settings.api_v1_prefix}/auth"):
         return True
+    if method == "GET" and _CLIENTE_RASTER_GET_RE.match(path):
+        return True
     if method == "GET" and (
         path.startswith(f"{settings.api_v1_prefix}/projects")
         or path.startswith(f"{settings.api_v1_prefix}/layers")
-        or path.startswith(f"{settings.api_v1_prefix}/raster")
         or path.startswith(f"{settings.api_v1_prefix}/preprocess/")
         or path.startswith(f"{settings.api_v1_prefix}/cluster-analysis/")
         or path.startswith(f"{settings.api_v1_prefix}/fire-orders")

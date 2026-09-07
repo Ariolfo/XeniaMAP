@@ -3,7 +3,8 @@ import api, { formatApiErrorDetail, setAuthToken } from "../api";
 
 /**
  * Selector de carpeta origen:
- * - Disco externo (montado; sin copiar)
+ * - Data_XeniaMap (disco externo montado; sin copiar)
+ * - Proyecto (STORAGE_PATH del tenant/proyecto)
  * - almacenamiento del proyecto
  * - carpeta del computador (sube a local_import/…)
  */
@@ -22,7 +23,7 @@ export default function ProjectStorageFolderPicker({
 }) {
   const [mode, setMode] = useState(externalOnly ? "external" : "external"); // external | project | local
   const [externalEnabled, setExternalEnabled] = useState(false);
-  const [browsePath, setBrowsePath] = useState("");
+  const [, setBrowsePath] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -97,7 +98,7 @@ export default function ProjectStorageFolderPicker({
         if (externalOnly) {
           setMode("external");
           if (!enabled) {
-            setError("Disco externo no está montado. Revisa EXTERNAL_DATA_HOST_PATH en Docker.");
+            setError("Data_XeniaMap no está montado. Revisa EXTERNAL_DATA_HOST_PATH en Docker.");
             setData(null);
             return;
           }
@@ -249,7 +250,7 @@ export default function ProjectStorageFolderPicker({
                       void loadExternal(isExt(initialPath) ? stripExt(initialPath) : "");
                     }}
                   >
-                    Disco externo
+                    Data_XeniaMap
                   </button>
                 ) : null}
                 <button
@@ -280,7 +281,7 @@ export default function ProjectStorageFolderPicker({
               <p className="l2a-browse-cwd">
                 {mode === "external" ? (
                   <>
-                    Disco externo: <code>{cwd || "(raíz)"}</code>
+                    Data_XeniaMap: <code>{cwd || "(raíz)"}</code>
                     <span className="l2a-downloads-hint"> — lectura directa, sin copiar</span>
                   </>
                 ) : (

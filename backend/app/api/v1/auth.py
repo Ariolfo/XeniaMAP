@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, issue_tokens, require_admin
-from app.core.otp_store import set_otp, verify_and_consume_otp
+from app.core.config import settings
+from app.core.mail import send_otp_email, smtp_configured
+from app.core.otp_store import peek_otp_for_dev, set_otp, verify_and_consume_otp
 from app.core.security import decode_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models.models import Tenant, User, UserAuditLog
@@ -30,13 +32,8 @@ from app.schemas.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-SIMULATED_OTP_CODE = "12345678"
 
 router = APIRouter()
-ADMIN_EMAILS = {
-    "ariolfo.camacho@saber.uis.co",
-    "ariolfo.camacho@saber.uis.edu.co",
-}
 
 
 def _append_audit(
@@ -69,7 +66,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         db.flush()
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already exists")
-    role = "admin" if str(payload.email).strip().lower() in ADMIN_EMAILS else "cliente"
+    role = "admin" if settings.is_bootstrap_admin(payload.email) else "cliente"
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
@@ -127,13 +124,43 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
             status_code=400,
             detail="Este correo es administrador. Debe iniciar sesión con contraseña.",
         )
-    code = SIMULATED_OTP_CODE
-    set_otp(email, code)
-    logger.info("OTP simulado de registro solicitado para %s", email)
-    dbg = SIMULATED_OTP_CODE
+
+    simulate = bool(settings.otp_simulate)
+    if not simulate and not smtp_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Verificación por correo no configurada. "
+                "Defina SMTP_* o OTP_SIMULATE=1 solo en desarrollo."
+            ),
+        )
+
+    code = f"{secrets.randbelow(10**8):08d}"
+    set_otp(email, code, ttl_sec=int(settings.otp_ttl_sec))
+
+    if simulate:
+        logger.warning(
+            "OTP_SIMULATE activo — código emitido para dominio=%s",
+            email.split("@")[-1],
+        )
+        dbg = peek_otp_for_dev(email) or code
+        return {
+            "message": (
+                "Modo desarrollo (OTP_SIMULATE): use el código mostrado. "
+                "No usar en producción."
+            ),
+            "debug_otp": dbg,
+        }
+
+    sent = send_otp_email(email, code)
+    if not sent:
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo enviar el correo de verificación. Intente más tarde.",
+        )
     return {
-        "message": "Modo simulación activo: use el código 12345678 para verificar su correo.",
-        "debug_otp": dbg,
+        "message": "Se envió un código de verificación a su correo. Revise la bandeja de entrada.",
+        "debug_otp": None,
     }
 
 
@@ -156,7 +183,7 @@ def verify_otp_and_register(payload: VerifyOtpRegisterRequest, db: Session = Dep
         db.add(tenant)
         db.flush()
     auto_pw = secrets.token_urlsafe(24)
-    role = "admin" if email in ADMIN_EMAILS else "cliente"
+    role = "admin" if settings.is_bootstrap_admin(email) else "cliente"
     user = User(
         email=email,
         hashed_password=hash_password(auto_pw),

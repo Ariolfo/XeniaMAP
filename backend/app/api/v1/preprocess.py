@@ -7,17 +7,9 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import urlopen
 
 import numpy as np
 import rasterio
-from rasterio.enums import Resampling
-from rasterio.transform import xy
-from matplotlib import colormaps
-from matplotlib.path import Path as MplPath
-from PIL import Image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sklearn.cluster import KMeans
@@ -26,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_project_dashboard_access, tenant_from_jwt
 from app.api.v1.helpers import (
+    _safe_relative_under,
     _existing_raster_path,
     _get_project_raster,
     _tenant_storage,
@@ -36,50 +29,10 @@ from app.api.v1.helpers import (
     validate_upload_size,
 )
 
-from app.services.soilplus import (
-    _SOILPLUS_DEM_EXTS,
-    _SOILPLUS_DEM_PREFERRED,
-    _load_soilplus_dem_band1,
-    _normalize_soil_cv_engine,
-    _resolve_soilplus_dem_path,
-    _soilplus_allocate_samples_per_cluster_dem,
-    _soilplus_aspect_slope_deg,
-    _soilplus_box_sum,
-    _soilplus_cluster_png,
-    _soilplus_compute_cv,
-    _soilplus_compute_cv_dispatch,
-    _soilplus_compute_cv_matlab,
-    _soilplus_eff_pixel_rc_column_major,
-    _soilplus_effective_roi_mask,
-    _soilplus_f123_from_roi_dem,
-    _soilplus_fcm_labels_from_cv_norm,
-    _soilplus_fishnet_candidates,
-    _soilplus_fishnet_origin_1based,
-    _soilplus_parse_roi_polygon,
-    _soilplus_png_aspect_masked,
-    _soilplus_png_cv_colormap,
-    _soilplus_png_from_array,
-    _soilplus_png_slope_masked,
-    _soilplus_polygon_mask,
-    _soilplus_qcomp_from_cv_flat,
-    _soilplus_resolve_cv_colormap,
-    _soilplus_roi_planar_area_m2,
-    _soilplus_sample_points_hoya_rs,
-    _soilplus_saved_variant_slug,
-)
 from app.services.preprocess_pipeline_variant import (
     indices_dir_name,
-    is_planetscope_ps_recorte_filename,
     normalize_pipeline_variant,
-    recortes_dir_name,
 )
-from app.services.ps_spatiotemporal_cluster import (
-    cluster_map_to_png,
-    get_preset,
-    load_meta,
-    run_ps_spatiotemporal_cluster,
-)
-from app.services.raster_geo import render_raster_preview_png
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.models import Layer, Project, RasterLayer, User
@@ -108,9 +61,11 @@ def _pipeline_variant_query(pipeline_variant: str = Query("s2", description='s2 
     return normalize_pipeline_variant(pipeline_variant)
 
 
+from app.application.agro import agroclimate as _agroclimate
+
+
 def _norm_iso_date(raw: str) -> str:
-    s = str(raw or "").strip()
-    return s[:10] if len(s) >= 10 else s
+    return _agroclimate.norm_iso_date(raw)
 
 
 def _collect_dates_from_index_stacks(tenant_id: int, project_id: int, pipeline_variant: str) -> list[str]:
@@ -128,7 +83,9 @@ def _collect_dates_from_index_stacks(tenant_id: int, project_id: int, pipeline_v
         parts = Path(rel).parts
         if len(parts) < 2:
             continue
-        if _canonical_index_dir_name(parts[0]) is None:
+        from app.application.agro.optical_inventory import canonical_index_dir_name
+
+        if canonical_index_dir_name(parts[0]) is None:
             continue
         try:
             with rasterio.open(p) as src:
@@ -192,86 +149,19 @@ def _collect_dates_from_s1_sar_stacks(tenant_id: int, project_id: int) -> list[s
 
 
 def _open_meteo_daily(lat: float, lon: float, start_date: str, end_date: str) -> list[dict]:
-    """Serie diaria (Open-Meteo archive) en unidades nativas."""
-    params = {
-        "latitude": f"{lat:.8f}",
-        "longitude": f"{lon:.8f}",
-        "start_date": start_date,
-        "end_date": end_date,
-        "timezone": "auto",
-        "daily": "temperature_2m_mean,relative_humidity_2m_mean,precipitation_sum,shortwave_radiation_sum",
-    }
-    url = f"https://archive-api.open-meteo.com/v1/archive?{urlencode(params)}"
+    """Serie diaria (Open-Meteo archive); lógica en application/agro/agroclimate."""
     try:
-        with urlopen(url, timeout=25) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=502, detail=f"No se pudo consultar Open-Meteo: {exc!s}") from exc
-
-    daily = payload.get("daily") or {}
-    times = daily.get("time") or []
-    t2m = daily.get("temperature_2m_mean") or []
-    rh = daily.get("relative_humidity_2m_mean") or []
-    pr = daily.get("precipitation_sum") or []
-    sw = daily.get("shortwave_radiation_sum") or []
-    n = min(len(times), len(t2m), len(rh), len(pr), len(sw))
-    out: list[dict] = []
-    for i in range(n):
-        d = _norm_iso_date(times[i])
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
-            continue
-        out.append(
-            {
-                "date": d,
-                "temp": float(t2m[i]) if t2m[i] is not None else None,
-                "humidity": float(rh[i]) if rh[i] is not None else None,
-                "precip": float(pr[i]) if pr[i] is not None else None,
-                "radiation": float(sw[i]) if sw[i] is not None else None,
-            }
-        )
-    return out
+        return _agroclimate.fetch_open_meteo_daily(lat, lon, start_date, end_date)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _monthly_means_from_daily(rows: list[dict]) -> dict[str, dict]:
-    buckets: dict[str, dict[str, list[float]]] = {}
-    for r in rows:
-        m = str(r.get("date") or "")[:7]
-        if not re.match(r"^\d{4}-\d{2}$", m):
-            continue
-        b = buckets.setdefault(m, {"precip": [], "temp": [], "humidity": [], "radiation": []})
-        for k in ("precip", "temp", "humidity", "radiation"):
-            v = r.get(k)
-            if v is None or not np.isfinite(v):
-                continue
-            b[k].append(float(v))
-    out: dict[str, dict] = {}
-    for m, b in buckets.items():
-        out[m] = {
-            "precip": float(np.mean(b["precip"])) if b["precip"] else None,
-            "temp": float(np.mean(b["temp"])) if b["temp"] else None,
-            "humidity": float(np.mean(b["humidity"])) if b["humidity"] else None,
-            "radiation": float(np.mean(b["radiation"])) if b["radiation"] else None,
-        }
-    return out
+    return _agroclimate.monthly_means_from_daily(rows)
 
 
 def _series_from_scene_dates(scene_dates: list[str], monthly_means: dict[str, dict]) -> list[dict]:
-    out: list[dict] = []
-    for d in scene_dates:
-        nd = _norm_iso_date(d)
-        month = nd[:7]
-        row = monthly_means.get(month) or {}
-        out.append(
-            {
-                "date": nd,
-                "month": month,
-                "precip": row.get("precip"),
-                "temp": row.get("temp"),
-                "humidity": row.get("humidity"),
-                "radiation": row.get("radiation"),
-            }
-        )
-    return out
+    return _agroclimate.series_from_scene_dates(scene_dates, monthly_means)
 
 
 @router.post("/preprocess/download")
@@ -281,100 +171,39 @@ def preprocess_download(
     user: User = Depends(get_current_user),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
+    from app.application.agro.download import StartSentinel2ProjectDownload, WriteStubProjectDownload
+
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
 
     if payload.source == "sentinel-2":
-        if not settings.copernicus_user or not settings.copernicus_password:
-            raise HTTPException(status_code=500, detail="Copernicus credentials not configured")
-        if not payload.start_date or not payload.end_date:
-            raise HTTPException(status_code=400, detail="start_date and end_date are required for Sentinel-2")
-        if not payload.download_subpath or not str(payload.download_subpath).strip().startswith("ext:"):
-            raise HTTPException(
-                status_code=400,
-                detail="Indica la carpeta de destino en el disco externo (download_subpath ext:…).",
-            )
-
         from app.services.project_geometry import wkt_union_from_project_layers
 
         wkt = wkt_union_from_project_layers(db, payload.project_id, tenant_id, payload.layer_id)
-        if not wkt:
-            raise HTTPException(status_code=400, detail="No vector layer found in project to define download area. Upload a lote first.")
-
         try:
-            out_dir, _s1_parent, encoded_dest = ensure_external_sensor_download_dirs(
-                payload.download_subpath, "s2"
+            return StartSentinel2ProjectDownload().execute(
+                db=db,
+                tenant_id=tenant_id,
+                project_id=payload.project_id,
+                start_date=payload.start_date,
+                end_date=payload.end_date,
+                download_subpath=payload.download_subpath,
+                wkt=wkt,
+                copernicus_configured=bool(settings.copernicus_user and settings.copernicus_password),
+                database_url=settings.database_url,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            detail = str(exc)
+            code = 500 if "credentials" in detail.lower() else 503
+            raise HTTPException(status_code=code, detail=detail) from exc
 
-        raster = RasterLayer(
-            project_id=payload.project_id,
-            tenant_id=tenant_id,
-            name=f"Sentinel-2 ({payload.start_date} a {payload.end_date})",
-            file_path=str(out_dir),
-            cog_path=None,
-            raster_metadata={
-                "source": "sentinel-2",
-                "type": "download",
-                "status": "downloading",
-                "start_date": payload.start_date,
-                "end_date": payload.end_date,
-                "download_subpath": encoded_dest,
-                "download_root": str(out_dir),
-            },
-        )
-        db.add(raster)
-        db.commit()
-        db.refresh(raster)
-
-        from app.tasks.jobs import download_sentinel2
-
-        async_result = download_sentinel2.delay(
-            wkt,
-            payload.start_date,
-            payload.end_date,
-            str(out_dir),
-            raster.id,
-            settings.database_url,
-        )
-        raster.raster_metadata = {
-            **(raster.raster_metadata or {}),
-            "celery_task_id": async_result.id,
-        }
-        db.commit()
-
-        return {
-            "status": "downloading",
-            "raster_layer_id": raster.id,
-            "task_id": async_result.id,
-            "output_dir": str(out_dir),
-            "download_subpath": encoded_dest,
-        }
-
-    out_dir = _tenant_storage(tenant_id, payload.project_id, "rasters")
-    out_path = out_dir / f"download_{payload.source}_{uuid.uuid4().hex}.tif"
-
-    width, height = 256, 256
-    data = (np.random.rand(height, width) * 255).astype("uint8")
-    transform = rasterio.transform.from_origin(-74.2, 4.9, 0.0005, 0.0005)
-    with rasterio.open(
-        out_path, "w", driver="GTiff", height=height, width=width,
-        count=1, dtype=data.dtype, crs="EPSG:4326", transform=transform,
-    ) as dst:
-        dst.write(data, 1)
-
-    raster = RasterLayer(
-        project_id=payload.project_id,
+    return WriteStubProjectDownload().execute(
+        db=db,
         tenant_id=tenant_id,
-        name=f"{payload.source}.tif",
-        file_path=str(out_path),
-        cog_path=str(out_path),
-        raster_metadata={"source": payload.source, "type": "download"},
+        project_id=payload.project_id,
+        source=payload.source,
     )
-    db.add(raster)
-    db.commit()
-    db.refresh(raster)
-    return {"status": "ok", "raster_layer_id": raster.id}
 
 
 @router.post("/preprocess/sentinel1-download")
@@ -398,27 +227,14 @@ async def preprocess_sentinel1_download(
     AOI: capa vectorial del proyecto (layer_id) o archivo GeoJSON / ZIP shapefile (aoi_file).
     Destino: carpeta en el disco externo (``download_subpath``); archivos en ``Sentinel1/``.
     """
-    from datetime import date as date_cls
+    from app.application.agro.download import StartSentinel1ProjectDownload, parse_sentinel1_layer_id
 
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    require_project_dashboard_access(db, user, tenant_id, project_id)
 
-    if not settings.copernicus_user or not settings.copernicus_password:
-        raise HTTPException(status_code=500, detail="Copernicus credentials not configured")
-
-    if not download_subpath or not str(download_subpath).strip().startswith("ext:"):
-        raise HTTPException(
-            status_code=400,
-            detail="Indica la carpeta de destino en el disco externo (download_subpath ext:…).",
-        )
-
-    lid = None
-    if layer_id is not None and str(layer_id).strip() != "":
-        try:
-            lid = int(layer_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="layer_id inválido")
-        if lid < 1:
-            raise HTTPException(status_code=400, detail="layer_id inválido")
+    try:
+        lid = parse_sentinel1_layer_id(layer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     has_aoi_upload = bool(aoi_file and getattr(aoi_file, "filename", None))
     if not has_aoi_upload and lid is None:
@@ -426,18 +242,6 @@ async def preprocess_sentinel1_download(
             status_code=400,
             detail="Indica una capa vectorial (paso 1) o sube un AOI (GeoJSON o ZIP shapefile).",
         )
-
-    try:
-        d0 = date_cls.fromisoformat(start_date.strip())
-        d1 = date_cls.fromisoformat(end_date.strip())
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Fechas inválidas; use YYYY-MM-DD")
-
-    if d1 < d0:
-        raise HTTPException(status_code=400, detail="La fecha final debe ser >= fecha inicial")
-
-    if images_per_month not in {0, 1, 2, 3}:
-        raise HTTPException(status_code=400, detail="images_per_month debe ser 0 (todas), 1, 2 o 3")
 
     wkt: str | None = None
     if has_aoi_upload:
@@ -465,63 +269,26 @@ async def preprocess_sentinel1_download(
         if not wkt:
             raise HTTPException(status_code=400, detail="No se pudo obtener geometría desde la capa vectorial.")
 
-    if not wkt:
-        raise HTTPException(status_code=400, detail="AOI vacío o inválido.")
-
     try:
-        sensor_dir, s1_parent, encoded_dest = ensure_external_sensor_download_dirs(
-            download_subpath.strip(), "s1"
+        return StartSentinel1ProjectDownload().execute(
+            db=db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            start_date=start_date,
+            end_date=end_date,
+            download_subpath=download_subpath,
+            wkt=wkt,
+            layer_id=lid,
+            images_per_month=images_per_month,
+            copernicus_configured=bool(settings.copernicus_user and settings.copernicus_password),
+            database_url=settings.database_url,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    raster = RasterLayer(
-        project_id=project_id,
-        tenant_id=tenant_id,
-        name=f"Sentinel-1 GRD IW ({start_date} a {end_date})",
-        file_path=str(sensor_dir),
-        cog_path=None,
-        raster_metadata={
-            "source": "sentinel-1",
-            "type": "download",
-            "status": "downloading",
-            "start_date": start_date,
-            "end_date": end_date,
-            "layer_id": lid,
-            "images_per_month": images_per_month,
-            "download_subpath": encoded_dest,
-            "download_root": str(sensor_dir),
-        },
-    )
-    db.add(raster)
-    db.commit()
-    db.refresh(raster)
-
-    from app.tasks.jobs import download_sentinel1
-
-    async_result = download_sentinel1.delay(
-        wkt,
-        start_date.strip(),
-        end_date.strip(),
-        str(s1_parent),
-        raster.id,
-        settings.database_url,
-        images_per_month,
-    )
-    raster.raster_metadata = {
-        **(raster.raster_metadata or {}),
-        "celery_task_id": async_result.id,
-    }
-    db.commit()
-
-    return {
-        "status": "downloading",
-        "raster_layer_id": raster.id,
-        "task_id": async_result.id,
-        "output_dir": str(sensor_dir),
-        "download_subpath": encoded_dest,
-        "sentinel1_subdir": str(sensor_dir),
-    }
+    except RuntimeError as exc:
+        detail = str(exc)
+        code = 500 if "credentials" in detail.lower() else 503
+        raise HTTPException(status_code=code, detail=detail) from exc
 
 
 @router.get("/preprocess/sentinel-status/{project_id}/{raster_id}")
@@ -533,104 +300,18 @@ def sentinel_download_status(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """Poll Sentinel-2 download progress (Celery + DB metadata)."""
+    from app.application.agro.download import GetSentinelDownloadStatus
+
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    from celery.result import AsyncResult
-
-    from app.tasks.celery_app import celery_app
-
-    raster = (
-        db.query(RasterLayer)
-        .filter(
-            RasterLayer.id == raster_id,
-            RasterLayer.project_id == project_id,
-            RasterLayer.tenant_id == tenant_id,
+    try:
+        return GetSentinelDownloadStatus().execute(
+            db=db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            raster_id=raster_id,
         )
-        .first()
-    )
-    if not raster:
-        raise HTTPException(status_code=404, detail="Raster not found")
-
-    meta = raster.raster_metadata or {}
-    db_status = meta.get("status")
-    progress = int(meta.get("progress", 0) or 0)
-    message = meta.get("progress_message") or "Preparando descarga..."
-
-    if db_status == "completed":
-        done = {
-            "ui_status": "completed",
-            "progress": 100,
-            "message": meta.get("progress_message") or "Descarga terminada",
-            "total_downloaded": meta.get("total_downloaded"),
-            "total_size_mb": meta.get("total_size_mb"),
-            "skipped_low_coverage": meta.get("skipped_low_coverage"),
-            "skipped_high_cloud": meta.get("skipped_high_cloud"),
-        }
-        if meta.get("source") == "sentinel-1":
-            done["selected_relative_orbit"] = meta.get("selected_relative_orbit")
-            done["selected_orbit_direction"] = meta.get("selected_orbit_direction")
-            done["selected_pass_short"] = meta.get("selected_pass_short")
-            done["date_range_start"] = meta.get("date_range_start")
-            done["date_range_end"] = meta.get("date_range_end")
-            done["csv_path"] = meta.get("csv_path")
-        return done
-
-    if db_status == "failed":
-        return {
-            "ui_status": "failed",
-            "progress": 0,
-            "message": meta.get("error") or meta.get("progress_message") or "Error en descarga",
-        }
-
-    task_id = meta.get("celery_task_id")
-    celery_state = None
-    if task_id:
-        ar = AsyncResult(task_id, app=celery_app)
-        celery_state = ar.state
-
-        # Celery a menudo queda en STARTED mientras el worker actualiza la BD; la barra y el
-        # mensaje deben salir sobre todo de raster_metadata (progress_callback).
-        if celery_state == "PROGRESS" and isinstance(ar.info, dict):
-            cp = int(ar.info.get("progress", 0) or 0)
-            cm = ar.info.get("message")
-            progress = max(progress, cp)
-            if cm:
-                message = str(cm)
-
-        if celery_state == "SUCCESS" or (ar.ready() and ar.successful()):
-            done = {
-                "ui_status": "completed",
-                "progress": 100,
-                "message": meta.get("progress_message") or "Descarga terminada",
-                "total_downloaded": meta.get("total_downloaded"),
-                "total_size_mb": meta.get("total_size_mb"),
-                "skipped_low_coverage": meta.get("skipped_low_coverage"),
-                "skipped_high_cloud": meta.get("skipped_high_cloud"),
-                "celery_state": celery_state,
-            }
-            if meta.get("source") == "sentinel-1":
-                done["selected_relative_orbit"] = meta.get("selected_relative_orbit")
-                done["selected_orbit_direction"] = meta.get("selected_orbit_direction")
-                done["selected_pass_short"] = meta.get("selected_pass_short")
-                done["date_range_start"] = meta.get("date_range_start")
-                done["date_range_end"] = meta.get("date_range_end")
-                done["csv_path"] = meta.get("csv_path")
-            return done
-
-        if celery_state == "FAILURE" or (ar.ready() and ar.failed()):
-            err = str(ar.result) if ar.result else "Error en la tarea"
-            return {
-                "ui_status": "failed",
-                "progress": 0,
-                "message": err,
-                "celery_state": celery_state,
-            }
-
-    return {
-        "ui_status": "downloading",
-        "progress": progress,
-        "message": message,
-        "celery_state": celery_state,
-    }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/crop")
@@ -640,65 +321,23 @@ def preprocess_crop(
     user: User = Depends(get_current_user),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
+    from app.application.agro.crop_recortes import CropRasterCenter, crop_output_path
+
     require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     raster = _get_project_raster(db, tenant_id, payload.project_id, payload.raster_layer_id)
     src_path = _existing_raster_path(raster)
-    out_path = _tenant_storage(tenant_id, payload.project_id, "preprocess") / f"crop_{uuid.uuid4().hex}.tif"
-
-    ratio = max(0.2, min(1.0, payload.crop_ratio))
-    with rasterio.open(src_path) as src:
-        h = int(src.height * ratio)
-        w = int(src.width * ratio)
-        r0 = (src.height - h) // 2
-        c0 = (src.width - w) // 2
-        window = rasterio.windows.Window(c0, r0, w, h)
-        data = src.read(window=window)
-        profile = src.profile.copy()
-        profile.update(height=h, width=w, transform=src.window_transform(window))
-        with rasterio.open(out_path, "w", **profile) as dst:
-            dst.write(data)
-    return {"status": "ok", "output_path": str(out_path)}
-
-
-def _safe_relative_under(root: Path, p: Path) -> str | None:
-    """Ruta posix relativa a ``root`` o None si ``p`` no queda bajo ``root``."""
-    try:
-        root_r = root.resolve()
-        pr = p.resolve()
-        rel = pr.relative_to(root_r)
-        return rel.as_posix()
-    except ValueError:
-        return None
+    out_path = crop_output_path(tenant_id, payload.project_id)
+    output = CropRasterCenter().execute(
+        src_path=src_path,
+        out_path=out_path,
+        crop_ratio=payload.crop_ratio,
+    )
+    return {"status": "ok", "output_path": output}
 
 
 # Fecha de adquisición en nombres GRD IW: ...S1A_IW_GRDH_1SDV_20250111T102623...
-_S1_IW_GRDH_SCENE_DATE = re.compile(r"S1[A-Z]_IW_GRDH_1SDV_(\d{8})T", re.IGNORECASE)
-
 # ENVI/SNAP sigma0 en dB bajo s1preproceso/ (legacy: s1prepoceso)
-_S1_PREP_VV_PREVIEW_PALETTES: dict[str, str] = {
-    "spectral": "Spectral",
-    "jet": "jet",
-    "turbo": "turbo",
-}
-
-# ENVI/SNAP sigma0 en dB bajo s1preproceso/
-_S1_PREP_SIGMA0_IMG: dict[str, str] = {
-    "vv": "Sigma0_VV_db.img",
-    "vh": "Sigma0_VH_db.img",
-}
-
-
-def _s1_preproceso_sort_key_from_path(path: Path) -> str:
-    """Clave YYYY-MM-DD para ordenar; prioriza la fecha en el nombre de carpeta GRD."""
-    text = "/".join(path.parts)
-    m = _S1_IW_GRDH_SCENE_DATE.search(text)
-    if m:
-        ymd = m.group(1)
-        return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
-    except OSError:
-        return "1900-01-01"
+# Constantes / helpers → application/agro/s1_inventory.py
 
 
 @router.get("/preprocess/s1-preproceso-sigma0-vv-inventory/{project_id}")
@@ -717,34 +356,15 @@ def get_s1_preproceso_sigma0_vv_inventory(
     Lista ``Sigma0_VV_db.img`` o ``Sigma0_VH_db.img`` bajo ``s1preproceso/`` (SNAP/ENVI).
     ``sort_key`` en formato ISO (YYYY-MM-DD) extraído de ``..._S1?_IW_GRDH_1SDV_YYYYMMDDTh...`` en la ruta.
     """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.s1_inventory import ListS1PrepSigma0Inventory
 
-    p = str(pol or "vv").strip().lower()
-    if p not in _S1_PREP_SIGMA0_IMG:
-        raise HTTPException(status_code=400, detail="pol debe ser vv o vh")
-    basename = _S1_PREP_SIGMA0_IMG[p]
-
-    root = project_s1_preproceso_dir(tenant_id, project_id)
-    if not root.is_dir():
-        return {"items": [], "root_exists": False, "pol": p}
-
-    items: list[dict] = []
-    for path in sorted(root.rglob(basename)):
-        if not path.is_file() or path.name != basename:
-            continue
-        rel = _safe_relative_under(root, path)
-        if rel is None:
-            continue
-        sk = _s1_preproceso_sort_key_from_path(path)
-        items.append(
-            {
-                "basename": path.name,
-                "relative_path": rel,
-                "sort_key": sk,
-            }
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    try:
+        return ListS1PrepSigma0Inventory().execute(
+            tenant_id=tenant_id, project_id=project_id, pol=pol
         )
-    items.sort(key=lambda x: (x["sort_key"], x["relative_path"]))
-    return {"items": items, "root_exists": True, "pol": p}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/s1-preproceso-sigma0-vv-preview/{project_id}")
@@ -769,43 +389,21 @@ def get_s1_preproceso_sigma0_vv_preview(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """PNG de una banda (sigma0 VV o VH en dB) desde ENVI en ``s1preproceso/`` (paleta científica)."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.s1_inventory import PreviewS1PrepSigma0Png
 
-    p = str(pol or "vv").strip().lower()
-    if p not in _S1_PREP_SIGMA0_IMG:
-        raise HTTPException(status_code=400, detail="pol debe ser vv o vh")
-    expected_name = _S1_PREP_SIGMA0_IMG[p]
-
-    if img_relpath is None or not str(img_relpath).strip():
-        raise HTTPException(status_code=400, detail="Indica path")
-
-    root = project_s1_preproceso_dir(tenant_id, project_id).resolve()
-    rel = Path(str(img_relpath).strip().replace("\\", "/"))
-    if rel.is_absolute() or ".." in rel.parts:
-        raise HTTPException(status_code=400, detail="Ruta relativa no válida")
-    img_path = (root / rel).resolve()
-    if not img_path.is_file() or not img_path.is_relative_to(root):
-        raise HTTPException(status_code=404, detail=f"{expected_name} no encontrado")
-    if img_path.name != expected_name:
-        raise HTTPException(
-            status_code=400,
-            detail=f"El archivo debe ser {expected_name} para pol={p}",
-        )
-
-    cmap_key = _S1_PREP_VV_PREVIEW_PALETTES.get(str(palette or "spectral").strip().lower())
-    if cmap_key is None:
-        allowed = ", ".join(sorted(_S1_PREP_VV_PREVIEW_PALETTES))
-        raise HTTPException(status_code=400, detail=f"palette inválida; use: {allowed}")
-
-    meta = {"preview_rgb_bands": [1, 1, 1], "index_preview_cmap": cmap_key}
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        png = render_raster_preview_png(
-            img_path,
-            layer_metadata=meta,
-            index_palette_request=True,
+        png = PreviewS1PrepSigma0Png().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            img_relpath=img_relpath,
+            pol=pol,
+            palette=palette,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo generar la vista previa: {exc}") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=png,
         media_type="image/png",
@@ -828,13 +426,10 @@ def get_s1_prep_sar_scenes_inventory(
     Escenas con par ``Sigma0_VV_db.img`` + ``Sigma0_VH_db.img`` en ``s1preproceso/`` (misma carpeta ``.data``).
     Orden cronológico por fecha GRD en la ruta.
     """
-    from app.services.s1_sar_indices import discover_s1_prep_sar_scenes
+    from app.application.agro.s1_inventory import ListS1PrepSarScenes
 
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    root = project_s1_preproceso_dir(tenant_id, project_id)
-    items = discover_s1_prep_sar_scenes(tenant_id, project_id)
-    return {"items": items, "root_exists": root.is_dir()}
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    return ListS1PrepSarScenes().execute(tenant_id=tenant_id, project_id=project_id)
 
 
 @router.post("/preprocess/s1-sar-index-stacks")
@@ -848,29 +443,21 @@ def preprocess_s1_sar_index_stacks(
     Encola generación de stacks multibanda (una banda por escena, orden cronológico) por cada índice SAR.
     Salida **solo** en ``s1indices/<INDICE>/`` del proyecto (no usa ``indices/`` de Sentinel-2).
     """
-    from app.tasks.jobs import s1_sar_index_stacks_pipeline
+    from app.application.agro.s1_inventory import EnqueueS1SarIndexStacks
 
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    paths = [str(p).strip().replace("\\", "/") for p in payload.scene_vv_relpaths if str(p).strip()]
-    paths = list(dict.fromkeys(paths))
-    if not paths:
-        raise HTTPException(status_code=400, detail="Indica al menos una escena (ruta a Sigma0_VV_db.img)")
-
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
-        async_result = s1_sar_index_stacks_pipeline.delay(
-            tenant_id,
-            payload.project_id,
-            payload.indices,
-            paths,
-            settings.database_url,
+        return EnqueueS1SarIndexStacks().execute(
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            indices=payload.indices,
+            scene_vv_relpaths=payload.scene_vv_relpaths,
+            database_url=settings.database_url,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No se pudo encolar la tarea de índices SAR. ¿Redis y worker activos? {exc!s}",
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/recortes-inventory/{project_id}")
@@ -886,1331 +473,15 @@ def get_recortes_inventory(
     ``relative_path`` identifica el archivo para preview y tareas; ``basename`` es solo el nombre final.
     ``raster_layer_id`` si una capa apunta al mismo path resuelto, al mismo basename, o a ``metadata.source_name`` con ese basename (p. ej. TIF en ``rasters/`` copiado desde ``recortesPS/``).
     """
-    from app.services.s2_vegetation_indices import sort_key_from_path_or_meta
-
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    rec_kind = recortes_dir_name(pipeline_variant)
-    recortes_root = _tenant_storage(tenant_id, project_id, rec_kind)
-    if not recortes_root.is_dir():
-        return {"items": [], "recortes_dir": rec_kind, "pipeline_variant": normalize_pipeline_variant(pipeline_variant)}
-
-    resolved_to_rid: dict[Path, int] = {}
-    name_to_rid: dict[str, int] = {}
-    # Capa en ``rasters/`` suele tener otro path que el TIF en ``recortesPS/``; enlazar por ``source_name`` original.
-    source_basename_to_rid: dict[str, int] = {}
-    for r in (
-        db.query(RasterLayer)
-        .filter(RasterLayer.project_id == project_id, RasterLayer.tenant_id == tenant_id)
-        .all()
-    ):
-        om = r.raster_metadata or {}
-        sn = (om.get("source_name") or "").strip()
-        if sn:
-            sb = Path(sn).name
-            if sb.lower().endswith(".tif") and "_cog" not in sb.lower():
-                source_basename_to_rid.setdefault(sb, r.id)
-        nm = (r.name or "").strip()
-        if nm and is_planetscope_ps_recorte_filename(nm):
-            source_basename_to_rid.setdefault(Path(nm).name, r.id)
-        for attr in (r.file_path, r.cog_path):
-            if not attr:
-                continue
-            fp = Path(attr)
-            bn = fp.name
-            if "_cog" in bn.lower():
-                continue
-            if not bn.lower().endswith(".tif"):
-                continue
-            if fp.is_file():
-                try:
-                    resolved_to_rid[fp.resolve()] = r.id
-                except OSError:
-                    pass
-            if bn not in name_to_rid:
-                name_to_rid[bn] = r.id
-
-    pv = normalize_pipeline_variant(pipeline_variant)
-    items: list[dict] = []
-    for p in sorted(recortes_root.rglob("*.tif")):
-        if "_cog" in p.name.lower():
-            continue
-        if not p.is_file():
-            continue
-        if pv == "ps" and not is_planetscope_ps_recorte_filename(p.name):
-            continue
-        rel = _safe_relative_under(recortes_root, p)
-        if rel is None:
-            continue
-        try:
-            with rasterio.open(p) as src:
-                bands = int(src.count)
-        except Exception:
-            continue
-        if bands < 6:
-            continue
-        sk = sort_key_from_path_or_meta(p, None)
-        if not sk:
-            try:
-                sk = datetime.fromtimestamp(p.stat().st_mtime).date().isoformat()
-            except OSError:
-                sk = "1900-01-01"
-        rid = resolved_to_rid.get(p.resolve())
-        if rid is None:
-            rid = name_to_rid.get(p.name)
-        if rid is None:
-            rid = source_basename_to_rid.get(p.name)
-        items.append(
-            {
-                "basename": p.name,
-                "relative_path": rel,
-                "bands": bands,
-                "sort_key": sk,
-                "raster_layer_id": rid,
-            }
-        )
-    items.sort(key=lambda x: (x["sort_key"], x["relative_path"]))
-    return {
-        "items": items,
-        "recortes_dir": rec_kind,
-        "pipeline_variant": normalize_pipeline_variant(pipeline_variant),
-    }
-
-
-def _pct_stretch01(x: np.ndarray) -> np.ndarray:
-    finite = x[np.isfinite(x)]
-    if finite.size < 16:
-        return np.zeros_like(x, dtype=np.float64)
-    lo, hi = np.percentile(finite, [2.0, 98.0])
-    if hi <= lo + 1e-9:
-        return np.clip(x - lo, 0.0, 1.0)
-    return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
-
-
-def _luma_laplace_var_from_rgb(r: np.ndarray, g: np.ndarray, b: np.ndarray) -> tuple[float, float]:
-    """Brillo percibencial tras estirado por percentiles y varianza del laplaciano (textura / bordes)."""
-    nr = _pct_stretch01(r.astype(np.float64))
-    ng = _pct_stretch01(g.astype(np.float64))
-    nb = _pct_stretch01(b.astype(np.float64))
-    L = 0.299 * nr + 0.587 * ng + 0.114 * nb
-    if not np.any(np.isfinite(L)):
-        return float("nan"), float("nan")
-    c = L[1:-1, 1:-1]
-    lap = L[:-2, 1:-1] + L[2:, 1:-1] + L[1:-1, :-2] + L[1:-1, 2:] - 4.0 * c
-    return float(np.mean(L[np.isfinite(L)])), float(np.var(lap[np.isfinite(lap)]))
-
-
-@router.get("/preprocess/dashboard-ia-planet-integral/{project_id}")
-def dashboard_ia_planet_integral(
-    project_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-    max_scenes: int = Query(36, ge=4, le=60, description="Máximo de escenas PS 8 bandas a analizar (lectura subsampleada)."),
-):
-    """Visión por computador subsampleada en serie: NDVI, claros, textura RGB (6-4-2) y laplaciano del brillo."""
-    from app.services.s2_vegetation_indices import sort_key_from_path_or_meta
+    from app.application.agro.recortes_inventory import ListRecortesInventory
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    rec_kind = recortes_dir_name("ps")
-    recortes_root = _tenant_storage(tenant_id, project_id, rec_kind)
-    if not recortes_root.is_dir():
-        return {
-            "scenes": [],
-            "summary": {"n_scenes_analyzed": 0, "message": "Sin carpeta recortesPS"},
-        }
-
-    candidates: list[tuple[str, Path]] = []
-    for p in sorted(recortes_root.rglob("*.tif")):
-        if "_cog" in p.name.lower() or not p.is_file():
-            continue
-        if not is_planetscope_ps_recorte_filename(p.name):
-            continue
-        if _safe_relative_under(recortes_root, p) is None:
-            continue
-        try:
-            with rasterio.open(p) as src:
-                if int(src.count) < 8:
-                    continue
-        except Exception:
-            continue
-        sk = sort_key_from_path_or_meta(p, None) or "1900-01-01"
-        candidates.append((str(sk), p.resolve()))
-
-    candidates.sort(key=lambda x: (x[0], str(x[1])))
-    candidates = candidates[: int(max_scenes)]
-
-    sh = sw = 256
-    rows: list[dict] = []
-    for sk, p in candidates:
-        rel = _safe_relative_under(recortes_root, p)
-        try:
-            with rasterio.open(p) as src:
-                if int(src.count) < 8:
-                    continue
-                r = src.read(6, out_shape=(sh, sw), resampling=Resampling.average).astype(np.float32)
-                ir = src.read(8, out_shape=(sh, sw), resampling=Resampling.average).astype(np.float32)
-                g = src.read(4, out_shape=(sh, sw), resampling=Resampling.average).astype(np.float32)
-                b_rgb = src.read(2, out_shape=(sh, sw), resampling=Resampling.average).astype(np.float32)
-                ndvi = (ir - r) / (ir + r + 1e-6)
-                ndvi = np.clip(ndvi, -1, 1)
-                valid = np.isfinite(ndvi)
-                if not np.any(valid):
-                    rows.append({"sort_key": sk, "basename": p.name, "relative_path": rel, "error": "sin pixeles validos"})
-                    continue
-                v = ndvi[valid]
-                gsub = g[valid]
-                gmean = float(np.mean(gsub)) + 1e-6
-                green_cv = float(np.std(gsub) / gmean)
-                luma_mean, lap_var = _luma_laplace_var_from_rgb(r, g, b_rgb)
-                rows.append(
-                    {
-                        "sort_key": sk,
-                        "basename": p.name,
-                        "relative_path": rel,
-                        "ndvi_mean": float(np.mean(v)),
-                        "ndvi_std": float(np.std(v)),
-                        "frac_low_ndvi": float(np.mean(v < 0.22)),
-                        "frac_high_ndvi": float(np.mean(v > 0.55)),
-                        "green_cv": green_cv,
-                        "rgb_luma_mean": luma_mean,
-                        "rgb_laplace_var": lap_var,
-                        "sample_hw": [int(sh), int(sw)],
-                    }
-                )
-        except Exception as exc:
-            rows.append({"sort_key": sk, "basename": p.name, "relative_path": rel, "error": str(exc)[:160]})
-
-    ok = [r for r in rows if "ndvi_mean" in r]
-    summary: dict = {"n_scenes_analyzed": len(ok), "n_paths_seen": len(candidates)}
-    narrative: list[str] = []
-    if len(ok) >= 4:
-        ok.sort(key=lambda x: x["sort_key"])
-        n = len(ok)
-        third = max(1, n // 3)
-        early = ok[:third]
-        late = ok[n - third :]
-        fl_e = float(np.mean([float(x["frac_low_ndvi"]) for x in early]))
-        fl_l = float(np.mean([float(x["frac_low_ndvi"]) for x in late]))
-        summary["frac_low_ndvi_early_mean"] = fl_e
-        summary["frac_low_ndvi_late_mean"] = fl_l
-        summary["delta_frac_low_ndvi"] = fl_l - fl_e
-        gc_e = float(np.mean([float(x["green_cv"]) for x in early]))
-        gc_l = float(np.mean([float(x["green_cv"]) for x in late]))
-        summary["green_cv_early_mean"] = gc_e
-        summary["green_cv_late_mean"] = gc_l
-        summary["delta_green_cv"] = gc_l - gc_e
-        lap_e = float(np.mean([float(x["rgb_laplace_var"]) for x in early if np.isfinite(float(x.get("rgb_laplace_var", np.nan)))]))
-        lap_l = float(np.mean([float(x["rgb_laplace_var"]) for x in late if np.isfinite(float(x.get("rgb_laplace_var", np.nan)))]))
-        if np.isfinite(lap_e) and np.isfinite(lap_l):
-            summary["rgb_laplace_early_mean"] = lap_e
-            summary["rgb_laplace_late_mean"] = lap_l
-            summary["delta_rgb_laplace"] = lap_l - lap_e
-        dfl = fl_l - fl_e
-        if dfl > 0.04:
-            narrative.append(
-                f"Proxy de claros/bajo dosel: la fracción de NDVI bajo (<0.22) en malla {sh}×{sw} **aumenta** "
-                f"del tramo inicial (μ={fl_e:.3f}) al final (μ={fl_l:.3f}); Δ≈{dfl:+.3f}. "
-                "Coherente con **más áreas despejadas o menor cobertura foliar** en escenas recientes; validar en RGB Planet."
-            )
-        elif dfl < -0.04:
-            narrative.append(
-                f"La fracción de NDVI bajo **disminuye** entre tramos (Δ≈{dfl:+.3f}), compatible con recuperación "
-                "del dosel o menor exposición de suelo en las fechas recientes."
-            )
-        else:
-            narrative.append(
-                f"Cambio moderado en fracción de NDVI bajo entre tramos (Δ≈{dfl:+.3f}). "
-                "Lucanas o huecos localizados pueden **diluirse** en el promedio agregado; la firma fina sigue apareciendo en la **secuencia RGB** escena a escena."
-            )
-        if (gc_l - gc_e) > 0.035:
-            narrative.append(
-                "Mayor variabilidad relativa del canal verde en escenas recientes sugiere **textura más irregular** "
-                "(surcos, sombras o dosel menos homogéneo) frente al inicio de la serie."
-            )
-        dlap = summary.get("delta_rgb_laplace")
-        if dlap is not None and np.isfinite(dlap):
-            if dlap > 1.2e-4:
-                narrative.append(
-                    "La energía de borde en la composición RGB (laplaciano del brillo) **sube** en el tramo reciente "
-                    "respecto al inicial: suele asociarse a **más discontinuidades finas** en el dosel (huecos, surcos, "
-                    "bordes de copas o sombras móviles), coherente con revisión RGB fecha a fecha."
-                )
-            elif dlap < -1.2e-4:
-                narrative.append(
-                    "La energía de borde RGB **baja** hacia el final de la serie: imagen algo **más suave** "
-                    "(dosel más homogéneo, atmósfera más uniforme o menor contraste escena a escena); contrastar con NDVI."
-                )
-    elif ok:
-        narrative.append(
-            f"Solo {len(ok)} escena(s) válidas para el análisis automático; la trayectoria es corta y los contrastes "
-            "temporales deben interpretarse con cautela, apoyándose en RGB e índices del dashboard fecha a fecha."
-        )
-    else:
-        narrative.append("No se pudieron calcular estadísticos NDVI en recortes PS (revisar archivos 8 bandas).")
-
-    return {"scenes": rows, "summary": summary, "narrative": narrative}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _soilplus_execute_save_bundle(
-    project_id: int,
-    tenant_id: int,
-    *,
-    window_size: int,
-    cv_engine: str,
-    n_clusters: int,
-    fishnet_step: int,
-    roi_polygon: str | None,
-    total_samples: int | None,
-    cmap: str,
-    m: float,
-) -> dict[str, object]:
-    """
-    Pipeline Soil+ completo + escritura JSON y PNG en ``dem/soilplus_saved_{fast|matlab}.*``.
-    """
-    dem_path, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(status_code=400, detail="ROI vacía.")
-    area_m2 = _soilplus_roi_planar_area_m2(verts, mask, transform)
-    area_ha = area_m2 / 10000.0
-    inferred = total_samples is None
-    if total_samples is not None:
-        snc = int(total_samples)
-    else:
-        snc = max(1, int(round(area_ha))) if area_ha > 0 else 60
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _wu, cv_run_meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
+    return ListRecortesInventory().execute(
+        db,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        pipeline_variant=pipeline_variant,
     )
-    lab_map = _soilplus_fcm_labels_from_cv_norm(cv_w, eff, int(n_clusters), m=m)
-    alloc, snh, pix_c = _soilplus_allocate_samples_per_cluster_dem(arr, lab_map, eff, int(n_clusters), snc)
-    aspect_deg, slope_deg = _soilplus_aspect_slope_deg(arr, mask, transform)
-    sample_points = _soilplus_sample_points_hoya_rs(
-        arr,
-        aspect_deg,
-        lab_map,
-        eff,
-        alloc,
-        int(fishnet_step),
-        m=m,
-        seed=42,
-    )
-    nk = int(n_clusters)
-    actual = np.zeros(nk, dtype=np.int64)
-    for pt in sample_points:
-        cid = int(pt.get("cluster", -1))
-        if 0 <= cid < nk:
-            actual[cid] += 1
-    placed = int(actual.sum())
-
-    rc_cm = _soilplus_eff_pixel_rc_column_major(eff)
-    cv_flat = cv_w[rc_cm[:, 0], rc_cm[:, 1]].astype(np.float64)
-    if not np.all(np.isfinite(cv_flat)):
-        cv_flat = np.nan_to_num(cv_flat, nan=0.0, posinf=0.0, neginf=0.0)
-    vmax = float(np.max(cv_flat))
-    if vmax > 1e-12:
-        cv_flat = cv_flat / vmax
-
-    ks_q: list[int] = []
-    q_list: list[float | None] = []
-    for k in range(2, 12):
-        ks_q.append(int(k))
-        qv = _soilplus_qcomp_from_cv_flat(cv_flat, k, m=float(m), seed=42)
-        q_list.append(float(qv) if np.isfinite(qv) else None)
-
-    cmap_id = _soilplus_resolve_cv_colormap(cmap)
-    dem_png = _soilplus_png_from_array(arr, mask)
-    cv_png = _soilplus_png_cv_colormap(cv_w, eff, cmap_id)
-    aspect_png = _soilplus_png_aspect_masked(aspect_deg, eff)
-    slope_png = _soilplus_png_slope_masked(slope_deg, eff)
-    fcm_png = _soilplus_cluster_png(lab_map, eff, int(n_clusters))
-
-    slug = _soilplus_saved_variant_slug(cv_engine)
-    ts = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-    roi_applied = bool(verts is not None)
-    dem_mean = float(np.mean(arr[mask])) if np.count_nonzero(mask) else 0.0
-    dem_roi_mean = float(np.mean(arr[eff])) if np.count_nonzero(eff) else 0.0
-
-    bundle: dict[str, object] = {
-        "saved_at": ts,
-        "project_id": int(project_id),
-        "cv_engine_slug": slug,
-        "cv_run": cv_run_meta,
-        "window_size": int(window_size),
-        "n_clusters": int(n_clusters),
-        "fishnet_step": int(fishnet_step),
-        "roi_polygon_applied": roi_applied,
-        "roi_polygon": roi_polygon if roi_applied else None,
-        "roi_pixel_count": int(np.count_nonzero(eff)),
-        "polygon_area_m2": float(area_m2),
-        "polygon_area_ha": float(area_ha),
-        "total_samples": int(snc),
-        "total_samples_placed": placed,
-        "total_samples_inferred": inferred,
-        "samples_requested_per_cluster": [int(x) for x in alloc],
-        "samples_per_cluster": [int(x) for x in actual],
-        "pixels_per_cluster": pix_c,
-        "dem_weight_per_cluster": [float(x) for x in snh],
-        "raster_shape": {"height": int(arr.shape[0]), "width": int(arr.shape[1])},
-        "sample_points": sample_points,
-        "q_curve": {"k_values": ks_q, "q_values": q_list, "m": float(m)},
-        "dem_input_image_path": str(dem_path),
-        "dem_mean_snapshot": dem_mean,
-        "dem_roi_mean_snapshot": dem_roi_mean,
-        "cv_mean_snapshot": float(np.mean(cv_w[np.isfinite(cv_w)])) if np.any(np.isfinite(cv_w)) else 0.0,
-        "cv_colormap": str(cmap),
-        "fc_m": float(m),
-    }
-    terr: dict[str, float] = {}
-    try:
-        stats = _soilplus_f123_from_roi_dem(arr, mask, eff, transform)
-        for key in ("f1", "f2", "f3"):
-            if key in stats:
-                terr[key] = float(stats[key])
-        for key in ("aspect_roi_mean_deg", "slope_roi_mean_deg"):
-            if key in stats:
-                terr[key] = float(stats[key])
-    except Exception:
-        pass
-    bundle["terrain"] = terr
-
-    root = _tenant_storage(tenant_id, project_id, "dem")
-    root.mkdir(parents=True, exist_ok=True)
-    pref = f"soilplus_saved_{slug}"
-    (root / f"{pref}.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
-    for kind, blob in (
-        ("dem", dem_png),
-        ("cv", cv_png),
-        ("fcm", fcm_png),
-        ("aspect", aspect_png),
-        ("slope", slope_png),
-    ):
-        (root / f"{pref}_{kind}.png").write_bytes(blob)
-    return bundle
-
-
-@router.get("/preprocess/ps-soilplus-f1/{project_id}")
-def get_ps_soilplus_f1_exact(
-    project_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Calcula f1 exacto para Soil+ desde PlanetScope real:
-    media global de la banda 8 en todos los GeoTIFF válidos de ``recortesPS/``.
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    rec_root = _tenant_storage(tenant_id, project_id, recortes_dir_name("ps"))
-    if not rec_root.is_dir():
-        raise HTTPException(status_code=404, detail="No existe recortesPS/ para este proyecto.")
-
-    total_sum = 0.0
-    total_count = 0
-    used_files = 0
-    skipped_non_ps_name = 0
-    skipped_not_8band = 0
-    skipped_open_error = 0
-
-    for p in sorted(rec_root.rglob("*.tif")):
-        if "_cog" in p.name.lower() or not p.is_file():
-            continue
-        if not is_planetscope_ps_recorte_filename(p.name):
-            skipped_non_ps_name += 1
-            continue
-        try:
-            with rasterio.open(p) as src:
-                if int(src.count) < 8:
-                    skipped_not_8band += 1
-                    continue
-                band8 = src.read(8).astype(np.float64)
-                nd = src.nodatavals[7] if src.nodatavals and len(src.nodatavals) >= 8 else None
-                if nd is not None and np.isfinite(nd):
-                    band8 = np.where(band8 == float(nd), np.nan, band8)
-                band8 = np.where(np.isfinite(band8), band8, np.nan)
-                valid = np.isfinite(band8)
-                n_valid = int(np.count_nonzero(valid))
-                if n_valid <= 0:
-                    continue
-                total_sum += float(np.nansum(band8))
-                total_count += n_valid
-                used_files += 1
-        except Exception:
-            skipped_open_error += 1
-            continue
-
-    if total_count <= 0:
-        raise HTTPException(
-            status_code=404,
-            detail="No se encontraron píxeles válidos de banda 8 en recortesPS/.",
-        )
-
-    return {
-        "project_id": int(project_id),
-        "f1_band8_mean": total_sum / total_count,
-        "valid_pixel_count": total_count,
-        "files_used": used_files,
-        "files_skipped": {
-            "non_ps_filename": skipped_non_ps_name,
-            "less_than_8_bands": skipped_not_8band,
-            "open_error": skipped_open_error,
-        },
-        "source_dir": "recortesPS",
-        "method": "global_mean_of_band_8_across_all_valid_pixels",
-    }
-
-
-@router.get("/preprocess/soilplus-dem-input/{project_id}")
-def get_soilplus_dem_input_stats(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101, description="Fast: lado impar de ventana. Mat.: parámetro ws de CV.m."),
-    cv_engine: str = Query("fast", description="fast (sumas en caja, ventana lado impar) | matlab (CV.m nonzeros)."),
-    roi_polygon: str | None = Query(
-        None,
-        description='Opcional: JSON [[col,row],...] en pixeles del raster (mismo sistema que la vista previa DEM).',
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Fuente de entrada para Soil+ en ``dem/``:
-    ``band_1.img`` (legado), ``band_1.tif`` / ``.tiff``, u otro GeoTIFF DEM.
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    try:
-        dem_path, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-        verts = _soilplus_parse_roi_polygon(roi_polygon)
-        eff = _soilplus_effective_roi_mask(arr, mask, verts)
-        n_valid = int(np.count_nonzero(mask))
-        n_roi = int(np.count_nonzero(eff))
-        vals = arr[mask]
-        vals_roi = arr[eff] if n_roi else np.array([], dtype=np.float64)
-        stats_mask = eff if verts is not None else None
-        _cv_map, cv_for_stats, _ws_use, cv_run_meta = _soilplus_compute_cv_dispatch(
-            arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-        )
-        area_m2 = _soilplus_roi_planar_area_m2(verts, mask, transform)
-        area_ha = area_m2 / 10000.0
-        suggested_snc = max(1, int(round(area_ha))) if area_ha > 0 else 60
-        return {
-            "project_id": int(project_id),
-            "input_image_path": str(dem_path),
-            "window_size": int(window_size),
-            "cv_run": cv_run_meta,
-            "width": int(arr.shape[1]),
-            "height": int(arr.shape[0]),
-            "valid_pixel_count": n_valid,
-            "roi_pixel_count": n_roi,
-            "roi_polygon_applied": bool(verts is not None),
-            "polygon_area_m2": float(area_m2),
-            "polygon_area_ha": float(area_ha),
-            "suggested_sample_count": int(suggested_snc),
-            "dem_mean": float(np.mean(vals)),
-            "dem_std": float(np.std(vals)),
-            "dem_min": float(np.min(vals)),
-            "dem_max": float(np.max(vals)),
-            "dem_roi_mean": float(np.mean(vals_roi)) if vals_roi.size else 0.0,
-            "dem_roi_std": float(np.std(vals_roi)) if vals_roi.size else 0.0,
-            "cv_mean": float(np.mean(cv_for_stats)) if cv_for_stats.size else 0.0,
-            "cv_var": float(np.var(cv_for_stats)) if cv_for_stats.size else 0.0,
-            "method": "band1_dem_values_cleaned_negatives_to_zero_mask_gt_zero",
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo leer DEM de entrada: {exc}") from exc
-
-
-@router.get("/preprocess/soilplus-f123-terrain/{project_id}")
-def get_soilplus_f123_terrain(
-    project_id: int,
-    roi_polygon: str | None = Query(
-        None,
-        description="JSON [[col,row],...] del polígono cerrado; omitir para usar toda la máscara DEM (>0).",
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Covariables de terreno sobre el DEM en la ROI: f1 elevación, f2 aspecto, f3 pendiente (medias de valores 0–1
-    normalizados por min–max en la ROI, útiles como pesos auxiliares).
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _path, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono válido sobre el DEM o omite roi_polygon para usar toda la máscara.",
-        )
-    stats = _soilplus_f123_from_roi_dem(arr, mask, eff, transform)
-    return {
-        "project_id": int(project_id),
-        "roi_polygon_applied": bool(verts is not None),
-        "roi_pixel_count": int(np.count_nonzero(eff)),
-        **stats,
-        "method": "dem_roi_f1_aspect_f2_slope_f3_minmax_mean",
-    }
-
-
-@router.get("/preprocess/soilplus-sampling-plan/{project_id}")
-def get_soilplus_sampling_plan(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101),
-    cv_engine: str = Query("fast", description="fast | matlab (CV.m)"),
-    n_clusters: int = Query(4, ge=2, le=30),
-    fishnet_step: int = Query(
-        5,
-        ge=1,
-        le=80,
-        description="Paso de la rejilla fishNet para candidatos (equivalente a w en el flujo de referencia).",
-    ),
-    roi_polygon: str | None = Query(
-        None,
-        description="JSON [[col,row],...] polígono cerrado; omitir = máscara DEM válida completa.",
-    ),
-    total_samples: int | None = Query(
-        None,
-        ge=1,
-        le=500000,
-        description="Total de muestras; si se omite se usa max(1, round(área del ROI en ha)).",
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    FCM sobre CV normalizado en la ROI, reparto SN por zonas (DEM), y puntos finales vía
-    rejilla fishNet + FCM 2D (DEM, aspecto) y selección greedy por pertenencias.
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono o omite roi_polygon para usar toda la máscara DEM.",
-        )
-    area_m2 = _soilplus_roi_planar_area_m2(verts, mask, transform)
-    area_ha = area_m2 / 10000.0
-    inferred = total_samples is None
-    if total_samples is not None:
-        snc = int(total_samples)
-    else:
-        snc = max(1, int(round(area_ha))) if area_ha > 0 else 60
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _wu, cv_run_meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-    )
-    lab_map = _soilplus_fcm_labels_from_cv_norm(cv_w, eff, int(n_clusters), m=2.0)
-    alloc, snh, pix_c = _soilplus_allocate_samples_per_cluster_dem(
-        arr, lab_map, eff, int(n_clusters), snc
-    )
-    aspect_deg, _slope_unused = _soilplus_aspect_slope_deg(arr, mask, transform)
-    sample_points = _soilplus_sample_points_hoya_rs(
-        arr,
-        aspect_deg,
-        lab_map,
-        eff,
-        alloc,
-        int(fishnet_step),
-        m=2.0,
-        seed=42,
-    )
-    nk = int(n_clusters)
-    actual = np.zeros(nk, dtype=np.int64)
-    for pt in sample_points:
-        cid = int(pt.get("cluster", -1))
-        if 0 <= cid < nk:
-            actual[cid] += 1
-    placed = int(actual.sum())
-    return {
-        "project_id": int(project_id),
-        "window_size": int(window_size),
-        "cv_run": cv_run_meta,
-        "n_clusters": int(n_clusters),
-        "fishnet_step": int(fishnet_step),
-        "roi_polygon_applied": bool(verts is not None),
-        "roi_pixel_count": int(np.count_nonzero(eff)),
-        "polygon_area_m2": float(area_m2),
-        "polygon_area_ha": float(area_ha),
-        "total_samples": int(snc),
-        "total_samples_placed": placed,
-        "total_samples_inferred": inferred,
-        "samples_requested_per_cluster": [int(x) for x in alloc],
-        "samples_per_cluster": [int(x) for x in actual],
-        "pixels_per_cluster": pix_c,
-        "dem_weight_per_cluster": [float(x) for x in snh],
-        "raster_shape": {"height": int(arr.shape[0]), "width": int(arr.shape[1])},
-        "sample_points": sample_points,
-    }
-
-
-@router.post("/preprocess/soilplus-execute-save/{project_id}")
-def post_soilplus_execute_save(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101),
-    cv_engine: str = Query("fast", description="fast | matlab"),
-    n_clusters: int = Query(4, ge=2, le=30),
-    fishnet_step: int = Query(5, ge=1, le=80),
-    roi_polygon: str | None = Query(
-        None,
-        description="JSON [[col,row],...] polígono; omitir = máscara DEM completa.",
-    ),
-    total_samples: int | None = Query(
-        None,
-        ge=1,
-        le=500000,
-        description="Total muestras; omitir → heurística por há del ROI.",
-    ),
-    cmap: str = Query("jet"),
-    m: float = Query(2.0, ge=1.05, le=10.0),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Ejecuta Soil+ (CV+Fcm+muestreo+Q como en la agrupación de vistas previas),
-    guarda JSON y PNG bajo ``dem/soilplus_saved_{fast|matlab}``.
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    bundle = _soilplus_execute_save_bundle(
-        project_id,
-        tenant_id,
-        window_size=window_size,
-        cv_engine=cv_engine,
-        n_clusters=int(n_clusters),
-        fishnet_step=int(fishnet_step),
-        roi_polygon=roi_polygon,
-        total_samples=total_samples,
-        cmap=cmap,
-        m=float(m),
-    )
-    return {"saved": True, **bundle}
-
-
-@router.get("/preprocess/soilplus-saved-summary/{project_id}")
-def get_soilplus_saved_summary(
-    project_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """Índices ligeros de ejecuciones guardadas Fast / Mat por proyecto."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    root = _tenant_storage(tenant_id, project_id, "dem")
-    out: dict[str, dict[str, object] | None] = {}
-    for slug in ("fast", "matlab"):
-        jp = root / f"soilplus_saved_{slug}.json"
-        if not jp.is_file():
-            out[slug] = None
-            continue
-        try:
-            data = json.loads(jp.read_text(encoding="utf-8"))
-        except Exception:
-            out[slug] = {"error": "bad_json"}
-            continue
-        out[slug] = {
-            "saved_at": data.get("saved_at"),
-            "cv_run": data.get("cv_run"),
-            "window_size": data.get("window_size"),
-            "n_clusters": data.get("n_clusters"),
-            "total_samples": data.get("total_samples"),
-            "total_samples_placed": data.get("total_samples_placed"),
-            "fishnet_step": data.get("fishnet_step"),
-        }
-    return {"project_id": int(project_id), "variants": out}
-
-
-@router.get("/preprocess/soilplus-saved-json/{project_id}")
-def get_soilplus_saved_json(
-    project_id: int,
-    variant: str = Query("fast", description="fast | matlab"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """Payload JSON persistido para hidratar el dashboard cliente."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    vk = variant.strip().lower()
-    if vk not in ("fast", "matlab"):
-        raise HTTPException(status_code=400, detail="variant debe ser fast o matlab")
-    jp = _tenant_storage(tenant_id, project_id, "dem") / f"soilplus_saved_{vk}.json"
-    if not jp.is_file():
-        raise HTTPException(status_code=404, detail="No hay Soil+ guardado para esta variante")
-    try:
-        return json.loads(jp.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"JSON ilegible: {exc}") from exc
-
-
-@router.get("/preprocess/soilplus-saved-img/{project_id}")
-def get_soilplus_saved_img(
-    project_id: int,
-    variant: str = Query("fast", description="fast | matlab"),
-    kind: str = Query(
-        "dem",
-        description="dem | cv | fcm | aspect | slope",
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    vk = variant.strip().lower()
-    if vk not in ("fast", "matlab"):
-        raise HTTPException(status_code=400, detail="variant debe ser fast o matlab")
-    kd = kind.strip().lower()
-    if kd not in ("dem", "cv", "fcm", "aspect", "slope"):
-        raise HTTPException(status_code=400, detail="kind no soportado")
-    path_png = _tenant_storage(tenant_id, project_id, "dem") / f"soilplus_saved_{vk}_{kd}.png"
-    if not path_png.is_file():
-        raise HTTPException(status_code=404, detail="Imagen guardada no encontrada")
-    return FileResponse(path_png, media_type="image/png")
-
-
-def _soilplus_png_dem_valid_only(arr: np.ndarray, mask: np.ndarray) -> Image.Image:
-    """DEM en escala de grises solo donde hay valores; fondo transparente."""
-    vals = arr[mask]
-    if vals.size <= 0:
-        raise HTTPException(status_code=400, detail="No hay píxeles DEM válidos.")
-    lo = float(np.nanmin(vals))
-    hi = float(np.nanmax(vals))
-    den = max(hi - lo, 1e-12)
-    norm = np.zeros(arr.shape, dtype=np.float64)
-    norm[mask] = np.clip((vals - lo) / den, 0.0, 1.0)
-    u8 = (norm * 255.0).astype(np.uint8)
-    rgb = np.stack([u8, u8, u8], axis=-1)
-    alpha = np.where(mask, 255, 0).astype(np.uint8)
-    out = np.dstack((rgb, alpha))
-    return Image.fromarray(out, mode="RGBA")
-
-
-def _soilplus_png_dem_elevation_colorbar(arr: np.ndarray, mask: np.ndarray, *, max_dim: int = 420) -> Image.Image:
-    """DEM con paleta de alturas + barra de color (unidades de altura)."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    vals = arr[mask]
-    if vals.size <= 0:
-        raise HTTPException(status_code=400, detail="No hay píxeles DEM válidos.")
-    lo = float(np.nanmin(vals))
-    hi = float(np.nanmax(vals))
-    data = np.ma.array(arr, mask=~mask)
-    fig_w = max(4.2, max_dim / 100.0)
-    fig_h = max(3.6, (max_dim * 0.85) / 100.0)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=120)
-    try:
-        cmap = colormaps["terrain"].copy()
-    except Exception:
-        cmap = colormaps.get_cmap("terrain")
-    try:
-        cmap.set_bad(color=(1.0, 1.0, 1.0, 0.0))
-    except Exception:
-        pass
-    im = ax.imshow(data, cmap=cmap, vmin=lo, vmax=hi, interpolation="nearest")
-    ax.set_axis_off()
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Altura (m)", fontsize=10)
-    cbar.ax.tick_params(labelsize=8)
-    fig.tight_layout(pad=0.2)
-    buf = io.BytesIO()
-    fig.savefig(buf, format="PNG", dpi=140, bbox_inches="tight", facecolor="white", transparent=False)
-    plt.close(fig)
-    buf.seek(0)
-    return Image.open(buf).convert("RGBA")
-
-
-def _soilplus_upscale_image(img: Image.Image, max_dim: int = 420, *, nearest: bool = False) -> Image.Image:
-    w, h = img.size
-    if max(w, h) <= 0:
-        return img
-    scale = float(max_dim) / max(w, h)
-    if scale <= 1.01:
-        return img
-    resample_mod = getattr(Image, "Resampling", Image)
-    resample = resample_mod.NEAREST if nearest else resample_mod.LANCZOS
-    return img.resize((max(1, int(round(w * scale))), max(1, int(round(h * scale)))), resample)
-
-
-def _soilplus_overlay_sample_triangles(
-    img: Image.Image,
-    sample_points: list | None,
-    *,
-    grid_h: int,
-    grid_w: int,
-) -> Image.Image:
-    """Dibuja triángulos de muestreo (mismo criterio visual que Smart Soil) sobre el cluster."""
-    from PIL import ImageDraw
-
-    points = sample_points if isinstance(sample_points, list) else []
-    if not points or grid_h <= 0 or grid_w <= 0:
-        return img
-
-    out = img.convert("RGBA")
-    out_w, out_h = out.size
-    sx = out_w / float(grid_w)
-    sy = out_h / float(grid_h)
-    radius = max(6, int(round(min(sx, sy) * 0.42)))
-    draw = ImageDraw.Draw(out)
-    for point in points:
-        try:
-            col = float(point["col"])
-            row = float(point["row"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        x = (col + 0.5) * sx
-        y = (row + 0.5) * sy
-        triangle = [
-            (x, y - radius),
-            (x - radius * 0.92, y + radius * 0.58),
-            (x + radius * 0.92, y + radius * 0.58),
-        ]
-        # Amarillo alto contraste (como en Smart Soil / Markdown) para no fundirse con el cluster.
-        draw.polygon(triangle, fill=(255, 241, 118, 240), outline=(255, 255, 255, 255))
-        # Contorno oscuro fino para legibilidad sobre zonas claras.
-        draw.line(triangle + [triangle[0]], fill=(40, 40, 40, 220), width=max(1, radius // 5))
-    return out
-
-
-def _soilplus_label_panel(img: Image.Image, title: str, cell_w: int, cell_h: int) -> Image.Image:
-    """Centra el panel en una celda blanca con título superior."""
-    from PIL import ImageDraw, ImageFont
-
-    canvas = Image.new("RGBA", (cell_w, cell_h), (255, 255, 255, 255))
-    title_h = 28
-    avail_w = cell_w - 16
-    avail_h = cell_h - title_h - 16
-    panel = img.convert("RGBA")
-    scale = min(avail_w / max(panel.width, 1), avail_h / max(panel.height, 1), 1.0)
-    if scale < 0.999:
-        resample = getattr(Image, "Resampling", Image).LANCZOS
-        panel = panel.resize(
-            (max(1, int(panel.width * scale)), max(1, int(panel.height * scale))),
-            resample,
-        )
-    x0 = (cell_w - panel.width) // 2
-    y0 = title_h + (avail_h - panel.height) // 2
-    canvas.alpha_composite(panel, (x0, y0))
-    draw = ImageDraw.Draw(canvas)
-    try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
-    except OSError:
-        font = ImageFont.load_default()
-    draw.text((10, 6), title, fill=(35, 55, 40, 255), font=font)
-    return canvas
-
-
-def _build_soilplus_landing_mosaic(
-    project_id: int,
-    tenant_id: int,
-    *,
-    variant: str,
-) -> bytes:
-    """
-    Mosaico 2×2 para la landing:
-    1.1 DEM (solo valores válidos) | 1.2 DEM paleta de alturas + barra
-    2.1 CV                        | 2.2 Clusters Agrogeofísica
-    """
-    vk = variant.strip().lower()
-    if vk not in ("fast", "matlab"):
-        raise HTTPException(status_code=400, detail="variant debe ser fast o matlab")
-    jp = _tenant_storage(tenant_id, project_id, "dem") / f"soilplus_saved_{vk}.json"
-    if not jp.is_file():
-        raise HTTPException(status_code=404, detail=f"No hay Soil+ guardado ({vk})")
-    try:
-        meta = json.loads(jp.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"JSON ilegible: {exc}") from exc
-
-    dem_path, arr, mask, _transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    _ = dem_path
-    window_size = int(meta.get("window_size") or 3)
-    n_clusters = int(meta.get("n_clusters") or 4)
-    cv_engine = "matlab" if vk == "matlab" else "fast"
-    roi_polygon = meta.get("roi_polygon") if meta.get("roi_polygon_applied") else None
-    verts = _soilplus_parse_roi_polygon(roi_polygon if isinstance(roi_polygon, str) else None)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(status_code=400, detail="ROI vacía para mosaico Soil+.")
-
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _wu, _cv_meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-    )
-    lab_map = _soilplus_fcm_labels_from_cv_norm(cv_w, eff, int(n_clusters), m=2.0)
-
-    dem_gray = _soilplus_upscale_image(_soilplus_png_dem_valid_only(arr, mask), 420, nearest=True)
-    dem_elev = _soilplus_png_dem_elevation_colorbar(arr, mask, max_dim=420)
-    cv_img = _soilplus_upscale_image(
-        Image.open(io.BytesIO(_soilplus_png_cv_colormap(cv_w, eff, "jet"))).convert("RGBA"),
-        420,
-    )
-    cluster_img = _soilplus_upscale_image(
-        Image.open(io.BytesIO(_soilplus_cluster_png(lab_map, eff, int(n_clusters)))).convert("RGBA"),
-        420,
-        nearest=True,
-    )
-    shape = meta.get("raster_shape") or {}
-    grid_h = int(shape.get("height") or lab_map.shape[0])
-    grid_w = int(shape.get("width") or lab_map.shape[1])
-    cluster_img = _soilplus_overlay_sample_triangles(
-        cluster_img,
-        meta.get("sample_points"),
-        grid_h=grid_h,
-        grid_w=grid_w,
-    )
-
-    cell_w, cell_h = 520, 460
-    gap = 12
-    panels = [
-        _soilplus_label_panel(dem_gray, "1.1 DEM (valores válidos)", cell_w, cell_h),
-        _soilplus_label_panel(dem_elev, "1.2 DEM (altura)", cell_w, cell_h),
-        _soilplus_label_panel(cv_img, "2.1 CV", cell_w, cell_h),
-        _soilplus_label_panel(cluster_img, "2.2 Clusters (puntos de muestreo)", cell_w, cell_h),
-    ]
-    mosaic = Image.new("RGB", (cell_w * 2 + gap * 3, cell_h * 2 + gap * 3), (250, 251, 248))
-    positions = [(gap, gap), (gap * 2 + cell_w, gap), (gap, gap * 2 + cell_h), (gap * 2 + cell_w, gap * 2 + cell_h)]
-    for panel, (x, y) in zip(panels, positions):
-        mosaic.paste(panel.convert("RGB"), (x, y))
-    buf = io.BytesIO()
-    mosaic.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
-
-
-@router.get("/preprocess/soilplus-landing-mosaic/{project_id}")
-def get_soilplus_landing_mosaic(
-    project_id: int,
-    variant: str = Query("matlab", description="fast | matlab"),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """Mosaico 2×2 Agrogeofísica para la landing narrativa."""
-    require_project_dashboard_access(db, user, tenant_id, project_id)
-    try:
-        png = _build_soilplus_landing_mosaic(project_id, tenant_id, variant=variant)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("soilplus landing mosaic failed")
-        raise HTTPException(status_code=500, detail=f"No se pudo generar el mosaico: {exc}") from exc
-    return Response(
-        content=png,
-        media_type="image/png",
-        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
-    )
-
-
-@router.get("/preprocess/soilplus-dem-preview/{project_id}")
-def get_soilplus_dem_preview(
-    project_id: int,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    dem_path, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    _ = dem_path
-    png = _soilplus_png_from_array(arr, mask)
-    return Response(content=png, media_type="image/png")
-
-
-@router.get("/preprocess/soilplus-cv-preview/{project_id}")
-def get_soilplus_cv_preview(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101),
-    cv_engine: str = Query("fast", description="fast | matlab (CV.m)"),
-    roi_polygon: str | None = Query(
-        None,
-        description='Opcional: JSON [[col,row],...] pixeles; CV coloreado solo dentro del polígono.',
-    ),
-    cmap: str = Query("jet", description="Paleta matplotlib: jet, spectral, turbo, viridis, ..."),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacia: dibuja un polígono dentro del DEM valido o deja roi_polygon vacio.",
-        )
-    cmap_id = _soilplus_resolve_cv_colormap(cmap)
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _ws_ignore, _meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-    )
-    png = _soilplus_png_cv_colormap(cv_w, eff, cmap_id)
-    return Response(content=png, media_type="image/png")
-
-
-@router.get("/preprocess/soilplus-aspect-preview/{project_id}")
-def get_soilplus_aspect_preview(
-    project_id: int,
-    roi_polygon: str | None = Query(
-        None,
-        description="Opcional: JSON [[col,row],...]; mismo ROI que CV.",
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono o omite roi_polygon para usar toda la máscara DEM.",
-        )
-    aspect_deg, _slope = _soilplus_aspect_slope_deg(arr, mask, transform)
-    png = _soilplus_png_aspect_masked(aspect_deg, eff)
-    return Response(content=png, media_type="image/png")
-
-
-@router.get("/preprocess/soilplus-slope-preview/{project_id}")
-def get_soilplus_slope_preview(
-    project_id: int,
-    roi_polygon: str | None = Query(
-        None,
-        description="Opcional: JSON [[col,row],...]; mismo ROI que CV.",
-    ),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, transform = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono o omite roi_polygon para usar toda la máscara DEM.",
-        )
-    _aspect, slope_deg = _soilplus_aspect_slope_deg(arr, mask, transform)
-    png = _soilplus_png_slope_masked(slope_deg, eff)
-    return Response(content=png, media_type="image/png")
-
-
-
-@router.get("/preprocess/soilplus-q-curve/{project_id}")
-def get_soilplus_q_curve(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101),
-    cv_engine: str = Query("fast", description="fast | matlab (CV.m)"),
-    k_min: int = Query(2, ge=2, le=30),
-    k_max: int = Query(11, ge=2, le=30),
-    roi_polygon: str | None = Query(
-        None,
-        description="JSON [[col,row],...]; omitir = máscara DEM completa.",
-    ),
-    m: float = Query(2.0, ge=1.05, le=10.0),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Curva Q(K): para cada K se ejecuta FCM sobre CV(ROI) y se calcula Q = 1 - sum_k n_k var_k / (N var_total).
-    """
-    if k_max < k_min:
-        raise HTTPException(status_code=400, detail="k_max debe ser >= k_min")
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono o omite roi_polygon para usar toda la máscara DEM.",
-        )
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _wu, cv_run_meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-    )
-    rc_cm = _soilplus_eff_pixel_rc_column_major(eff)
-    cv_flat = cv_w[rc_cm[:, 0], rc_cm[:, 1]].astype(np.float64)
-    if not np.all(np.isfinite(cv_flat)):
-        cv_flat = np.nan_to_num(cv_flat, nan=0.0, posinf=0.0, neginf=0.0)
-    vmax = float(np.max(cv_flat))
-    if vmax > 1e-12:
-        cv_flat = cv_flat / vmax
-
-    ks: list[int] = []
-    q_list: list[float | None] = []
-    for k in range(int(k_min), int(k_max) + 1):
-        ks.append(int(k))
-        qv = _soilplus_qcomp_from_cv_flat(cv_flat, k, m=float(m), seed=42)
-        if not np.isfinite(qv):
-            q_list.append(None)
-        else:
-            q_list.append(float(qv))
-
-    return {
-        "project_id": int(project_id),
-        "window_size": int(window_size),
-        "cv_run": cv_run_meta,
-        "m": float(m),
-        "k_values": ks,
-        "q_values": q_list,
-    }
-
-
-
-@router.get("/preprocess/soilplus-fcm-cv-preview/{project_id}")
-def get_soilplus_fcm_cv_preview(
-    project_id: int,
-    window_size: int = Query(13, ge=1, le=101),
-    cv_engine: str = Query("fast", description="fast | matlab (CV.m)"),
-    n_clusters: int = Query(4, ge=2, le=30),
-    roi_polygon: str | None = Query(
-        None,
-        description="Opcional: JSON [[col,row],...]; mismo ROI que CV.",
-    ),
-    m: float = Query(2.0, ge=1.05, le=10.0, description="Exponente de fuzziness FCM (típico 2)."),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    """
-    Vista raster: FCM (fuzzy c-means) sobre el mapa CV normalizado en la ROI / máscara DEM.
-    """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    verts = _soilplus_parse_roi_polygon(roi_polygon)
-    eff = _soilplus_effective_roi_mask(arr, mask, verts)
-    if int(np.count_nonzero(eff)) <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="ROI vacía: define un polígono en el DEM o deja roi_polygon vacío para usar toda la máscara.",
-        )
-    stats_mask = eff if verts is not None else None
-    cv_w, _, _wu, _meta = _soilplus_compute_cv_dispatch(
-        arr, mask, window_size, stats_mask=stats_mask, cv_engine=cv_engine
-    )
-    lab_map = _soilplus_fcm_labels_from_cv_norm(cv_w, eff, int(n_clusters), m=m)
-    png = _soilplus_cluster_png(lab_map, eff, int(n_clusters))
-    return Response(content=png, media_type="image/png")
-
-
-@router.get("/preprocess/soilplus-elbow/{project_id}")
-def get_soilplus_elbow(
-    project_id: int,
-    k_min: int = Query(2, ge=2, le=20),
-    k_max: int = Query(10, ge=2, le=30),
-    sample_max: int = Query(20000, ge=2000, le=120000),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    if k_max < k_min:
-        raise HTTPException(status_code=400, detail="k_max debe ser >= k_min")
-    _, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    x = arr[mask].reshape(-1, 1).astype(np.float64)
-    n = x.shape[0]
-    if n > sample_max:
-        rng = np.random.default_rng(42)
-        idx = rng.choice(n, size=int(sample_max), replace=False)
-        x = x[idx]
-    ks: list[int] = []
-    wcss: list[float] = []
-    for k in range(int(k_min), int(k_max) + 1):
-        km = KMeans(n_clusters=k, random_state=42, n_init=10)
-        km.fit(x)
-        ks.append(k)
-        wcss.append(float(km.inertia_))
-    # heurística simple de codo: máxima distancia a recta (primer-último punto)
-    elbow_k = ks[0]
-    if len(ks) >= 3:
-        x0, y0 = ks[0], wcss[0]
-        x1, y1 = ks[-1], wcss[-1]
-        den = ((y1 - y0) ** 2 + (x1 - x0) ** 2) ** 0.5
-        if den > 0:
-            dmax = -1.0
-            for k, y in zip(ks[1:-1], wcss[1:-1]):
-                d = abs((y1 - y0) * k - (x1 - x0) * y + x1 * y0 - y1 * x0) / den
-                if d > dmax:
-                    dmax = d
-                    elbow_k = k
-    return {
-        "project_id": int(project_id),
-        "source": "dem/(band_1.img|band_1.tif|DEM_*.tif)",
-        "ks": ks,
-        "wcss": wcss,
-        "elbow_k": elbow_k,
-        "sample_size": int(x.shape[0]),
-    }
-
-
-@router.get("/preprocess/soilplus-cluster-preview/{project_id}")
-def get_soilplus_cluster_preview(
-    project_id: int,
-    n_clusters: int = Query(4, ge=2, le=30),
-    sample_max: int = Query(20000, ge=2000, le=120000),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-    tenant_id: int = Depends(tenant_from_jwt),
-):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    _, arr, mask, _ = _load_soilplus_dem_band1(project_id, tenant_id)
-    x = arr[mask].reshape(-1, 1).astype(np.float64)
-    n = x.shape[0]
-    if n > sample_max:
-        rng = np.random.default_rng(42)
-        idx = rng.choice(n, size=int(sample_max), replace=False)
-        x_fit = x[idx]
-    else:
-        x_fit = x
-    km = KMeans(n_clusters=int(n_clusters), random_state=42, n_init=10)
-    km.fit(x_fit)
-    # Etiquetar todos los píxeles válidos con el modelo ajustado.
-    all_labels = km.predict(x).astype(np.int16)
-    lab_map = np.full(arr.shape, -1, dtype=np.int16)
-    lab_map[mask] = all_labels
-    png = _soilplus_cluster_png(lab_map, mask, int(n_clusters))
-    return Response(content=png, media_type="image/png")
 
 
 @router.get("/preprocess/recortes-preview/{project_id}")
@@ -2232,116 +503,22 @@ def get_recorte_preview_disk(
     pipeline_variant: str = Depends(_pipeline_variant_query),
 ):
     """Vista RGB desde GeoTIFF en ``recortes/`` o ``recortesPS/``: S2 típico B04,B03,B02 → 3,2,1; Planet PS (≥6 bandas) → 6,4,2."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.recortes_inventory import PreviewRecortePng
 
-    root = _tenant_storage(tenant_id, project_id, recortes_dir_name(pipeline_variant)).resolve()
-
-    tif_path: Path
-    basename: str
-    if recorte_relpath is not None and str(recorte_relpath).strip():
-        rel = Path(str(recorte_relpath).strip().replace("\\", "/"))
-        if rel.is_absolute() or ".." in rel.parts:
-            raise HTTPException(status_code=400, detail="Ruta relativa no válida")
-        full_path = (root / rel).resolve()
-        if not full_path.is_file() or not full_path.is_relative_to(root):
-            raise HTTPException(status_code=404, detail="GeoTIFF no encontrado en la carpeta de recortes del variant")
-        tif_path = full_path
-        basename = tif_path.name
-    elif name is not None and str(name).strip():
-        raw = str(name).strip()
-        if not raw or ".." in raw or "/" in raw or "\\" in raw:
-            raise HTTPException(status_code=400, detail="Nombre de archivo no válido")
-        basename = Path(raw).name
-        if basename != raw:
-            raise HTTPException(status_code=400, detail="Usa solo el nombre del archivo")
-        tif_path = (root / basename).resolve()
-        if not tif_path.is_file() or tif_path.parent != root:
-            raise HTTPException(status_code=404, detail="GeoTIFF no encontrado en la carpeta de recortes del variant")
-    else:
-        raise HTTPException(status_code=400, detail="Indica path o name")
-
-    if "_cog" in basename.lower():
-        raise HTTPException(status_code=400, detail="Usa el GeoTIFF fuente, no el COG")
-
-    if normalize_pipeline_variant(pipeline_variant) == "ps" and not is_planetscope_ps_recorte_filename(basename):
-        raise HTTPException(
-            status_code=400,
-            detail="Solo se admiten GeoTIFF con nombre PS_dd-mm-yy.tif (p. ej. PS_23-03-26.tif).",
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    try:
+        png = PreviewRecortePng().execute(
+            db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            recorte_relpath=recorte_relpath,
+            name=name,
+            pipeline_variant=pipeline_variant,
         )
-
-    meta: dict | None = None
-    layer_match: RasterLayer | None = None
-    layers_q = (
-        db.query(RasterLayer)
-        .filter(RasterLayer.project_id == project_id, RasterLayer.tenant_id == tenant_id)
-        .all()
-    )
-    try:
-        tif_r = tif_path.resolve()
-    except OSError:
-        tif_r = tif_path
-    for r in layers_q:
-        for attr in (r.file_path, r.cog_path):
-            if not attr:
-                continue
-            ap = Path(attr)
-            try:
-                if ap.is_file() and ap.resolve() == tif_r:
-                    layer_match = r
-                    break
-            except OSError:
-                continue
-        if layer_match is not None:
-            break
-    if layer_match is None:
-        for r in layers_q:
-            for attr in (r.file_path, r.cog_path):
-                if attr and Path(attr).name == basename:
-                    layer_match = r
-                    break
-            if layer_match is not None:
-                break
-    # COG en ``rasters/`` suele tener otro nombre; enlazar por ``source_name`` o nombre de capa PS_*.tif.
-    if layer_match is None:
-        for r in layers_q:
-            om = r.raster_metadata or {}
-            sn = (om.get("source_name") or "").strip()
-            if sn and Path(sn).name == basename:
-                layer_match = r
-                break
-    if layer_match is None:
-        for r in layers_q:
-            nm = (r.name or "").strip()
-            if nm and Path(nm).name == basename and is_planetscope_ps_recorte_filename(nm):
-                layer_match = r
-                break
-
-    if layer_match is not None:
-        meta = layer_match.raster_metadata or {}
-    else:
-        meta = {"preview_rgb_bands": [3, 2, 1], "s2_l2a_recorte": True}
-
-    render_path = tif_path
-    if normalize_pipeline_variant(pipeline_variant) == "ps":
-        # Siempre el GeoTIFF de ``recortesPS/`` (no el COG antiguo en ``rasters/``):
-        # tras un recorte al polígono el COG de capa queda desactualizado.
-        try:
-            with rasterio.open(render_path) as _chk:
-                n_ps = int(_chk.count)
-        except Exception:
-            n_ps = 0
-        if n_ps >= 6:
-            # Metadatos mínimos (evita ``s2_index_stack`` u otros flags heredados que alteran la RGB).
-            meta = {
-                "preview_rgb_bands": [6, 4, 2],
-                "planetscope_composite": True,
-                "source_name": basename,
-            }
-
-    try:
-        png = render_raster_preview_png(render_path, layer_metadata=meta)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo generar la vista previa: {exc}") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=png,
         media_type="image/png",
@@ -2352,39 +529,10 @@ def get_recorte_preview_disk(
     )
 
 
-_S1_SAR_INDEX_DIR_KEYS = frozenset({"RVI", "RFDI", "VV_VH", "VH_VV", "NRPB"})
-
-
 def _canonical_s1_sar_index_dir_name(raw: str) -> str | None:
-    """Carpeta bajo s1indices/ (índices SAR). Acepta capitalización distinta."""
-    u = raw.strip().upper().replace("/", "_")
-    return u if u in _S1_SAR_INDEX_DIR_KEYS else None
+    from app.application.agro.s1_inventory import canonical_s1_sar_index_dir_name
 
-
-# Carpetas bajo indices/ (S2) o indecesPS/ (Planet); debe coincidir con normalize_requested_indices.
-_PS_INDEX_DIR_NAMES = frozenset({"MSAVI2", "MTVI2", "VARI", "TGI", "KNDVI", "GIYI"})
-
-
-def _canonical_index_dir_name(raw: str) -> str | None:
-    """Carpeta bajo indices/ o indecesPS/ → clave estable (mismo criterio que el pipeline)."""
-    u = raw.strip().upper()
-    if u == "NDVI":
-        return "NDVI"
-    if u == "EVI":
-        return "EVI"
-    if u == "NDWI":
-        return "NDWI"
-    if u == "CIRE":
-        return "CIre"
-    if u == "MCARI":
-        return "MCARI"
-    if u == "NDRE":
-        return "NDRE"
-    if u == "RSTRUCTURE":
-        return "RSTRUCTURE"
-    if u in _PS_INDEX_DIR_NAMES:
-        return u
-    return None
+    return canonical_s1_sar_index_dir_name(raw)
 
 
 @router.get("/preprocess/index-stacks-inventory/{project_id}")
@@ -2396,60 +544,14 @@ def get_index_stacks_inventory(
     pipeline_variant: str = Depends(_pipeline_variant_query),
 ):
     """Lista GeoTIFF multibanda en ``indices/`` o ``indecesPS/`` (salida del pipeline de estimación, sin capas en BD)."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.optical_inventory import ListIndexStacksInventory
 
-    idx_kind = indices_dir_name(pipeline_variant)
-    indices_root = _tenant_storage(tenant_id, project_id, idx_kind)
-    if not indices_root.is_dir():
-        return {"items": [], "indices_dir": idx_kind, "pipeline_variant": normalize_pipeline_variant(pipeline_variant)}
-
-    items: list[dict] = []
-    seen_rel: set[str] = set()
-    # rglob: encuentra stacks aunque la carpeta sea ndvi/NDVI o haya subcarpetas; evita depender del casing exacto.
-    for p in sorted(indices_root.rglob("*.tif")):
-        if "_cog" in p.name.lower():
-            continue
-        if not p.is_file():
-            continue
-        rel = _safe_relative_under(indices_root, p)
-        if rel is None or rel in seen_rel:
-            continue
-        parts = Path(rel).parts
-        if len(parts) < 2:
-            continue
-        key = _canonical_index_dir_name(parts[0])
-        if key is None:
-            continue
-        seen_rel.add(rel)
-        try:
-            with rasterio.open(p) as src:
-                bands = int(src.count)
-                tags = src.tags()
-        except Exception:
-            continue
-        dates: list[str] = []
-        jd = tags.get("BAND_DATES_JSON")
-        if isinstance(jd, str) and jd.strip():
-            try:
-                parsed = json.loads(jd)
-                if isinstance(parsed, list):
-                    dates = [str(x) for x in parsed]
-            except json.JSONDecodeError:
-                dates = []
-        items.append(
-            {
-                "index_key": key,
-                "relative_path": rel,
-                "bands": bands,
-                "band_dates": dates,
-            }
-        )
-    items.sort(key=lambda x: (x["index_key"], x["relative_path"]))
-    return {
-        "items": items,
-        "indices_dir": idx_kind,
-        "pipeline_variant": normalize_pipeline_variant(pipeline_variant),
-    }
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    return ListIndexStacksInventory().execute(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        pipeline_variant=pipeline_variant,
+    )
 
 
 @router.get("/preprocess/index-stacks-preview/{project_id}")
@@ -2477,39 +579,22 @@ def get_index_stack_preview_disk(
     pipeline_variant: str = Depends(_pipeline_variant_query),
 ):
     """PNG de una banda de un stack de índices en disco (no requiere RasterLayer)."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.optical_inventory import PreviewIndexStackPng
 
-    if stack_relpath is None or not str(stack_relpath).strip():
-        raise HTTPException(status_code=400, detail="Indica path")
-
-    root = _tenant_storage(tenant_id, project_id, indices_dir_name(pipeline_variant)).resolve()
-    rel = Path(str(stack_relpath).strip().replace("\\", "/"))
-    if rel.is_absolute() or ".." in rel.parts:
-        raise HTTPException(status_code=400, detail="Ruta relativa no válida")
-    tif_path = (root / rel).resolve()
-    if not tif_path.is_file() or not tif_path.is_relative_to(root):
-        raise HTTPException(status_code=404, detail="Stack no encontrado")
-    if "_cog" in tif_path.name.lower():
-        raise HTTPException(status_code=400, detail="Usa el GeoTIFF fuente del stack")
-
-    first_seg = rel.parts[0] if rel.parts else ""
-    index_key = _canonical_index_dir_name(first_seg) or first_seg
-    meta = {
-        "s2_index_stack": True,
-        "vegetation_index_key": index_key,
-        "preview_rgb_bands": [1, 1, 1],
-        "index_preview_cmap": "RdYlGn",
-    }
-    rgb_override = (band, band, band) if band is not None else None
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        png = render_raster_preview_png(
-            tif_path,
-            layer_metadata=meta,
-            rgb_bands_1based=rgb_override,
-            index_palette_request=index_palette == 1,
+        png = PreviewIndexStackPng().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            stack_relpath=stack_relpath,
+            band=band,
+            index_palette=index_palette,
+            pipeline_variant=pipeline_variant,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo generar la vista previa: {exc}") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=png,
         media_type="image/png",
@@ -2528,56 +613,10 @@ def get_s1_sar_index_stacks_inventory(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """Lista GeoTIFF multibanda en ``s1indices/<INDICE>/`` (stacks SAR por escena)."""
-    from app.services.s1_sar_indices import S1_SAR_STACKS_ROOT_NAME
+    from app.application.agro.s1_inventory import ListS1SarIndexStacksInventory
 
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    root = _tenant_storage(tenant_id, project_id, S1_SAR_STACKS_ROOT_NAME)
-    if not root.is_dir():
-        return {"items": []}
-
-    items: list[dict] = []
-    seen_rel: set[str] = set()
-    for p in sorted(root.rglob("*.tif")):
-        if "_cog" in p.name.lower():
-            continue
-        if not p.is_file():
-            continue
-        rel = _safe_relative_under(root, p)
-        if rel is None or rel in seen_rel:
-            continue
-        parts = Path(rel).parts
-        if len(parts) < 2:
-            continue
-        key = _canonical_s1_sar_index_dir_name(parts[0])
-        if key is None:
-            continue
-        seen_rel.add(rel)
-        try:
-            with rasterio.open(p) as src:
-                bands = int(src.count)
-                tags = src.tags()
-        except Exception:
-            continue
-        dates: list[str] = []
-        jd = tags.get("BAND_DATES_JSON")
-        if isinstance(jd, str) and jd.strip():
-            try:
-                parsed = json.loads(jd)
-                if isinstance(parsed, list):
-                    dates = [str(x) for x in parsed]
-            except json.JSONDecodeError:
-                dates = []
-        items.append(
-            {
-                "index_key": key,
-                "relative_path": rel,
-                "bands": bands,
-                "band_dates": dates,
-            }
-        )
-    items.sort(key=lambda x: (x["index_key"], x["relative_path"]))
-    return {"items": items}
+    require_project_dashboard_access(db, user, tenant_id, project_id)
+    return ListS1SarIndexStacksInventory().execute(tenant_id=tenant_id, project_id=project_id)
 
 
 @router.get("/preprocess/s1-sar-index-stacks-preview/{project_id}")
@@ -2604,41 +643,21 @@ def get_s1_sar_index_stack_preview_disk(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """PNG de una banda de un stack de índices SAR en ``s1indices/``."""
-    from app.services.s1_sar_indices import S1_SAR_STACKS_ROOT_NAME
+    from app.application.agro.s1_inventory import PreviewS1SarIndexStackPng
 
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
-    if stack_relpath is None or not str(stack_relpath).strip():
-        raise HTTPException(status_code=400, detail="Indica path")
-
-    root = _tenant_storage(tenant_id, project_id, S1_SAR_STACKS_ROOT_NAME).resolve()
-    rel = Path(str(stack_relpath).strip().replace("\\", "/"))
-    if rel.is_absolute() or ".." in rel.parts:
-        raise HTTPException(status_code=400, detail="Ruta relativa no válida")
-    tif_path = (root / rel).resolve()
-    if not tif_path.is_file() or not tif_path.is_relative_to(root):
-        raise HTTPException(status_code=404, detail="Stack SAR no encontrado")
-    if "_cog" in tif_path.name.lower():
-        raise HTTPException(status_code=400, detail="Usa el GeoTIFF fuente del stack")
-
-    first_seg = rel.parts[0] if rel.parts else ""
-    index_key = _canonical_s1_sar_index_dir_name(first_seg) or first_seg
-    meta = {
-        "s2_index_stack": True,
-        "vegetation_index_key": index_key,
-        "preview_rgb_bands": [1, 1, 1],
-        "index_preview_cmap": "RdYlGn",
-    }
-    rgb_override = (band, band, band) if band is not None else None
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        png = render_raster_preview_png(
-            tif_path,
-            layer_metadata=meta,
-            rgb_bands_1based=rgb_override,
-            index_palette_request=index_palette == 1,
+        png = PreviewS1SarIndexStackPng().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            stack_relpath=stack_relpath,
+            band=band,
+            index_palette=index_palette,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo generar la vista previa: {exc}") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Response(
         content=png,
         media_type="image/png",
@@ -2660,119 +679,23 @@ def preprocess_s2_index_stacks(
     Genera stacks multibanda (una banda por escena/fecha) por índice en ``indices/<INDICE>/`` o ``indecesPS/``.
     Requiere GeoTIFF de recorte L2A de 6 bandas en ``recortes/`` o ``recortesPS/``.
     """
-    from app.services.s2_vegetation_indices import normalize_requested_indices
-    from app.tasks.jobs import s2_index_stacks_pipeline
+    from app.application.agro.indices import EnqueueS2IndexStacks
 
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    pairs = normalize_requested_indices(
-        payload.indices, pipeline_variant=normalize_pipeline_variant(payload.pipeline_variant)
-    )
-    if not pairs:
-        raise HTTPException(
-            status_code=400,
-            detail="Selecciona al menos un índice (o TODOS).",
-        )
-
-    rids = payload.raster_layer_ids
-    if rids is not None and len(rids) == 0:
-        rids = None
-    fnames = payload.recorte_filenames
-    if fnames is not None and len(fnames) == 0:
-        fnames = None
-    rids_eff = None if fnames else rids
-
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
-        async_result = s2_index_stacks_pipeline.delay(
-            tenant_id,
-            payload.project_id,
-            payload.indices,
-            settings.database_url,
-            rids_eff,
-            fnames,
-            normalize_pipeline_variant(payload.pipeline_variant),
+        return EnqueueS2IndexStacks().execute(
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            indices=payload.indices,
+            database_url=settings.database_url,
+            raster_layer_ids=payload.raster_layer_ids,
+            recorte_filenames=payload.recorte_filenames,
+            pipeline_variant=payload.pipeline_variant,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No se pudo encolar la tarea de índices. ¿Redis y worker activos? {exc!s}",
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id}
-
-
-def _sample_pixel_series_from_stacks(
-    stacked: dict[str, np.ndarray],
-    index_list: tuple[str, ...],
-    max_pixel_series: int,
-    random_seed: int,
-    roi_selection: RoiSelectionNormalized | None = None,
-) -> tuple[dict[str, list[list[float]]], int, int]:
-    """
-    Píxeles válidos en **todas** las fechas y **todos** los índices; muestreo aleatorio sin reemplazo.
-    Retorna (series_by_index, n_sampled, n_valid_pixels).
-    """
-    first = stacked[index_list[0]]
-    t, h, w = first.shape
-    mask = np.ones((h, w), dtype=bool)
-    if roi_selection is not None:
-        mask &= _roi_mask_from_selection(roi_selection, h, w)
-    for ix in index_list:
-        mask &= np.isfinite(stacked[ix]).all(axis=0)
-    flat_valid = np.flatnonzero(mask)
-    n_valid = int(flat_valid.size)
-    if n_valid == 0:
-        return {ix: [] for ix in index_list}, 0, 0
-    n_take = min(int(max_pixel_series), n_valid)
-    rng = np.random.default_rng(int(random_seed))
-    chosen = rng.choice(flat_valid, size=n_take, replace=False)
-    series_by_index: dict[str, list[list[float]]] = {}
-    for ix in index_list:
-        vol = stacked[ix]
-        lists: list[list[float]] = []
-        for fk in chosen:
-            r, c = np.unravel_index(int(fk), (h, w))
-            lists.append(vol[:, r, c].astype(np.float64).tolist())
-        series_by_index[ix] = lists
-    return series_by_index, n_take, n_valid
-
-
-def _roi_mask_for_polygon(points: list, h: int, w: int) -> np.ndarray:
-    if len(points) < 3:
-        return np.zeros((h, w), dtype=bool)
-    px = np.array([float(p.x) for p in points], dtype=np.float64)
-    py = np.array([float(p.y) for p in points], dtype=np.float64)
-    cols = (np.arange(w, dtype=np.float64) + 0.5) / max(w, 1)
-    rows = (np.arange(h, dtype=np.float64) + 0.5) / max(h, 1)
-    xg, yg = np.meshgrid(cols, rows)
-    inside = np.zeros((h, w), dtype=bool)
-    j = len(points) - 1
-    eps = 1e-12
-    for i in range(len(points)):
-        xi, yi = px[i], py[i]
-        xj, yj = px[j], py[j]
-        dy = yj - yi
-        denom = dy if abs(dy) > eps else eps
-        cross = xi + ((yg - yi) * (xj - xi) / denom)
-        intersects = ((yi > yg) != (yj > yg)) & (xg < cross)
-        inside ^= intersects
-        j = i
-    return inside
-
-
-def _roi_mask_from_selection(roi_selection: RoiSelectionNormalized, h: int, w: int) -> np.ndarray:
-    if roi_selection.polygon_points:
-        return _roi_mask_for_polygon(roi_selection.polygon_points, h, w)
-    c0 = int(np.floor(float(roi_selection.x1) * w))
-    c1 = int(np.ceil(float(roi_selection.x2) * w))
-    r0 = int(np.floor(float(roi_selection.y1) * h))
-    r1 = int(np.ceil(float(roi_selection.y2) * h))
-    c0 = min(max(c0, 0), w - 1)
-    c1 = min(max(c1, c0 + 1), w)
-    r0 = min(max(r0, 0), h - 1)
-    r1 = min(max(r1, r0 + 1), h)
-    roi_mask = np.zeros((h, w), dtype=bool)
-    roi_mask[r0:r1, c0:c1] = True
-    return roi_mask
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/vegetation-time-series")
@@ -2786,139 +709,23 @@ def preprocess_vegetation_time_series(
     Series desde stacks ya estimados en ``indices/`` (S2) o ``indecesPS/`` (PS).
     No selecciona escenas: cada stack (una banda por fecha) alimenta medias y series por píxel.
     """
-    from app.services.optical_index_time_series import (
-        build_normalized_sar_volumes_for_dates,
-        discover_primary_optical_index_stacks,
-        intersection_sorted_dates,
-        sample_pixel_series_from_stacks,
-    )
-    from app.services.preprocess_pipeline_variant import indices_dir_name
+    from app.application.agro.time_series import BuildVegetationTimeSeries
 
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    pv = normalize_pipeline_variant(payload.pipeline_variant)
-    idx_dir = indices_dir_name(pv)
-    stacks = discover_primary_optical_index_stacks(tenant_id, payload.project_id, pv)
-    if not stacks:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No hay stacks de índices en {idx_dir}/. "
-                "Ejecuta antes el paso 3 (Estimar índices)."
-            ),
-        )
-
-    available = set(intersection_sorted_dates(stacks))
-    if not available:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"No hay fechas comunes entre los stacks en {idx_dir}/ "
-                "(revisa BAND_DATES_JSON de cada índice estimado)."
-            ),
-        )
-
-    wanted_sorted: list[str] = []
-    seen: set[str] = set()
-    for d in payload.dates or []:
-        nd = _norm_iso_date(str(d))
-        if nd not in available:
-            raise HTTPException(
-                status_code=400,
-                detail=f"La fecha {nd} no está en la intersección de fechas de los stacks en {idx_dir}/.",
-            )
-        if nd not in seen:
-            seen.add(nd)
-            wanted_sorted.append(nd)
-    if wanted_sorted:
-        wanted_sorted.sort()
-    else:
-        wanted_sorted = sorted(available)
-
-    index_list = tuple(stacks.keys())
-
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
-        stacked, _ref = build_normalized_sar_volumes_for_dates(stacks, wanted_sorted, index_list)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"No se pudieron leer los stacks de índices: {exc!s}") from exc
-
-    points: list[dict] = []
-    first = stacked[index_list[0]]
-    _, h, w = first.shape
-    roi_mask = np.ones((h, w), dtype=bool)
-    if payload.roi_selection is not None:
-        roi_mask = _roi_mask_from_selection(payload.roi_selection, h, w)
-
-    for t, date in enumerate(wanted_sorted):
-        row: dict = {"date": date, "raster_layer_id": t + 1, "by_index": {}}
-        for ix in index_list:
-            plane = stacked[ix][t]
-            fin = plane[np.isfinite(plane) & roi_mask]
-            if fin.size == 0:
-                row["by_index"][ix] = {
-                    "mean": None,
-                    "std": None,
-                    "n_pixels": 0,
-                    "n_pixels_raw": 0,
-                }
-            else:
-                npx = int(fin.size)
-                row["by_index"][ix] = {
-                    "mean": float(np.nanmean(plane)),
-                    "std": float(np.nanstd(plane)),
-                    "n_pixels": npx,
-                    "n_pixels_raw": npx,
-                }
-        points.append(row)
-
-    temporal_stats: dict = {}
-    for ix in index_list:
-        vals = [p["by_index"][ix]["mean"] for p in points if p["by_index"][ix]["mean"] is not None]
-        if not vals:
-            temporal_stats[ix] = {"mean": None, "std": None}
-        else:
-            a = np.array(vals, dtype=np.float64)
-            temporal_stats[ix] = {
-                "mean": float(np.mean(a)),
-                "std": float(np.std(a, ddof=1)) if len(vals) > 1 else 0.0,
-            }
-
-    series_by_index, n_sampled, n_valid = sample_pixel_series_from_stacks(
-        stacked,
-        index_list,
-        payload.max_pixel_series,
-        payload.random_seed,
-        payload.roi_selection.model_dump() if payload.roi_selection is not None else None,
-    )
-
-    agg_desc = (
-        f"Índices desde stacks en {idx_dir}/ (una banda por fecha); normalización min-max por fecha. "
-        "Muestreo aleatorio de píxeles válidos en todas las fechas e índices estimados."
-    )
-    if payload.roi_selection is not None:
-        agg_desc = f"{agg_desc} Filtrado espacial por ROI normalizado."
-
-    return {
-        "source": "optical_index_stacks",
-        "project_id": payload.project_id,
-        "pipeline_variant": pv,
-        "roi_selection": payload.roi_selection.model_dump() if payload.roi_selection is not None else None,
-        "dates": wanted_sorted,
-        "indices": list(index_list),
-        "points": points,
-        "temporal_stats": temporal_stats,
-        "spatial_aggregation": {
-            "method": "all_valid_pixels_in_roi" if payload.roi_selection is not None else "all_valid_pixels",
-            "description": agg_desc,
-        },
-        "per_pixel": {
-            "n_sampled": n_sampled,
-            "n_valid_pixels": n_valid,
-            "max_requested": payload.max_pixel_series,
-            "random_seed": payload.random_seed,
-            "series_by_index": series_by_index,
-        },
-    }
+        return BuildVegetationTimeSeries().execute(
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            pipeline_variant=payload.pipeline_variant,
+            dates=payload.dates,
+            max_pixel_series=payload.max_pixel_series,
+            random_seed=payload.random_seed,
+            roi_selection=payload.roi_selection,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/s1-sar-time-series")
@@ -2932,128 +739,22 @@ def preprocess_s1_sar_time_series(
     Medias espaciales y series por píxel (muestreadas) desde los stacks en ``s1indices/``,
     misma forma de respuesta que ``/preprocess/vegetation-time-series`` (campo adicional ``source``).
     """
-    from app.services.s1_sar_indices import S1_SAR_INDEX_KEYS
-    from app.services.s1_sar_time_series import (
-        build_normalized_sar_volumes_for_dates,
-        discover_primary_s1_sar_stacks,
-        intersection_sorted_dates,
-        sample_pixel_series_from_stacks,
-    )
+    from app.application.agro.time_series import BuildS1SarTimeSeries
 
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    stacks = discover_primary_s1_sar_stacks(tenant_id, payload.project_id)
-    if len(stacks) < len(S1_SAR_INDEX_KEYS):
-        raise HTTPException(
-            status_code=400,
-            detail="No hay stacks completos para los cinco índices SAR en s1indices/. Ejecuta «Estimar índices SAR».",
-        )
-
-    available = set(intersection_sorted_dates(stacks))
-    if not available:
-        raise HTTPException(
-            status_code=400,
-            detail="No hay fechas comunes entre todos los stacks en s1indices/.",
-        )
-
-    wanted_sorted: list[str] = []
-    seen: set[str] = set()
-    for d in payload.dates or []:
-        raw = str(d).strip()
-        nd = raw[:10] if len(raw) >= 10 else raw
-        if nd not in available:
-            raise HTTPException(
-                status_code=400,
-                detail=f"La fecha {nd} no está en la intersección de fechas de todos los índices SAR (s1indices/).",
-            )
-        if nd not in seen:
-            seen.add(nd)
-            wanted_sorted.append(nd)
-    if wanted_sorted:
-        wanted_sorted.sort()
-    else:
-        wanted_sorted = sorted(available)
-
-    INDEX_LIST = tuple(S1_SAR_INDEX_KEYS)
-
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
-        stacked, _ref = build_normalized_sar_volumes_for_dates(stacks, wanted_sorted, INDEX_LIST)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"No se pudieron leer los stacks SAR: {exc!s}") from exc
-
-    points: list[dict] = []
-    first = stacked[INDEX_LIST[0]]
-    _, h, w = first.shape
-    roi_mask = np.ones((h, w), dtype=bool)
-    if payload.roi_selection is not None:
-        roi_mask = _roi_mask_from_selection(payload.roi_selection, h, w)
-
-    for t, date in enumerate(wanted_sorted):
-        row: dict = {"date": date, "raster_layer_id": t + 1, "by_index": {}}
-        for ix in INDEX_LIST:
-            plane = stacked[ix][t]
-            fin = plane[np.isfinite(plane) & roi_mask]
-            if fin.size == 0:
-                row["by_index"][ix] = {
-                    "mean": None,
-                    "std": None,
-                    "n_pixels": 0,
-                    "n_pixels_raw": 0,
-                }
-            else:
-                npx = int(fin.size)
-                row["by_index"][ix] = {
-                    "mean": float(np.nanmean(plane)),
-                    "std": float(np.nanstd(plane)),
-                    "n_pixels": npx,
-                    "n_pixels_raw": npx,
-                }
-        points.append(row)
-
-    temporal_stats: dict = {}
-    for ix in INDEX_LIST:
-        vals = [p["by_index"][ix]["mean"] for p in points if p["by_index"][ix]["mean"] is not None]
-        if not vals:
-            temporal_stats[ix] = {"mean": None, "std": None}
-        else:
-            a = np.array(vals, dtype=np.float64)
-            temporal_stats[ix] = {
-                "mean": float(np.mean(a)),
-                "std": float(np.std(a, ddof=1)) if len(vals) > 1 else 0.0,
-            }
-
-    series_by_index, n_sampled, n_valid = sample_pixel_series_from_stacks(
-        stacked,
-        INDEX_LIST,
-        payload.max_pixel_series,
-        payload.random_seed,
-        payload.roi_selection.model_dump() if payload.roi_selection is not None else None,
-    )
-
-    return {
-        "source": "s1_sar",
-        "project_id": payload.project_id,
-        "roi_selection": payload.roi_selection.model_dump() if payload.roi_selection is not None else None,
-        "dates": wanted_sorted,
-        "indices": list(INDEX_LIST),
-        "points": points,
-        "temporal_stats": temporal_stats,
-        "spatial_aggregation": {
-            "method": "all_valid_pixels_in_roi" if payload.roi_selection is not None else "all_valid_pixels",
-            "description": (
-                "Índices SAR por fecha desde s1indices/; normalización min-max por fecha en cada índice. "
-                "Muestreo aleatorio de píxeles válidos en todas las fechas e índices."
-                + (" Filtrado espacial por ROI normalizado." if payload.roi_selection is not None else "")
-            ),
-        },
-        "per_pixel": {
-            "n_sampled": n_sampled,
-            "n_valid_pixels": n_valid,
-            "max_requested": payload.max_pixel_series,
-            "random_seed": payload.random_seed,
-            "series_by_index": series_by_index,
-        },
-    }
+        return BuildS1SarTimeSeries().execute(
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            dates=payload.dates,
+            max_pixel_series=payload.max_pixel_series,
+            random_seed=payload.random_seed,
+            roi_selection=payload.roi_selection,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/agroclimate-series")
@@ -3069,62 +770,23 @@ def preprocess_agroclimate_series(
     - Rango: min/max de fechas disponibles entre stacks S1/S2/PS.
     - Valor por escena: promedio mensual del mes al que pertenece cada fecha del timelapse.
     """
-    from shapely import wkt as shapely_wkt
-
+    from app.application.agro.time_series import BuildAgroclimateSeries
     from app.services.project_geometry import wkt_union_from_project_layers
 
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     wkt = wkt_union_from_project_layers(db, project_id, tenant_id, None)
-    if not wkt:
-        return {
-            "project_id": project_id,
-            "source": "open-meteo",
-            "centroid": None,
-            "date_range": None,
-            "by_sensor": {"s1": [], "s2": [], "ps": []},
-            "monthly_source_dates": [],
-        }
-
     try:
-        geom = shapely_wkt.loads(wkt)
-        c = geom.centroid
-        lon = float(c.x)
-        lat = float(c.y)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo calcular centroide del AOI: {exc!s}") from exc
-
-    s1_dates = _collect_dates_from_s1_sar_stacks(tenant_id, project_id)
-    s2_dates = _collect_dates_from_index_stacks(tenant_id, project_id, "s2")
-    ps_dates = _collect_dates_from_index_stacks(tenant_id, project_id, "ps")
-    all_dates = sorted({*s1_dates, *s2_dates, *ps_dates})
-    if not all_dates:
-        return {
-            "project_id": project_id,
-            "source": "open-meteo",
-            "centroid": {"lat": lat, "lon": lon},
-            "date_range": None,
-            "by_sensor": {"s1": [], "s2": [], "ps": []},
-            "monthly_source_dates": [],
-        }
-
-    start_date = all_dates[0]
-    end_date = all_dates[-1]
-    daily_rows = _open_meteo_daily(lat, lon, start_date, end_date)
-    monthly_means = _monthly_means_from_daily(daily_rows)
-
-    return {
-        "project_id": project_id,
-        "source": "open-meteo",
-        "centroid": {"lat": lat, "lon": lon},
-        "date_range": {"start": start_date, "end": end_date},
-        "by_sensor": {
-            "s1": _series_from_scene_dates(s1_dates, monthly_means),
-            "s2": _series_from_scene_dates(s2_dates, monthly_means),
-            "ps": _series_from_scene_dates(ps_dates, monthly_means),
-        },
-        "monthly_source_dates": sorted(monthly_means.keys()),
-    }
+        return BuildAgroclimateSeries().execute(
+            project_id=project_id,
+            wkt=wkt,
+            s1_dates=_collect_dates_from_s1_sar_stacks(tenant_id, project_id),
+            s2_dates=_collect_dates_from_index_stacks(tenant_id, project_id, "s2"),
+            ps_dates=_collect_dates_from_index_stacks(tenant_id, project_id, "ps"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/indices")
@@ -3133,28 +795,20 @@ def preprocess_indices(
     db: Session = Depends(get_db),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
+    from app.application.agro.indices import ComputeSimpleVegetationIndex, simple_index_output_path
+
     raster = _get_project_raster(db, tenant_id, payload.project_id, payload.raster_layer_id)
     src_path = _existing_raster_path(raster)
-    out_path = _tenant_storage(tenant_id, payload.project_id, "preprocess") / f"{payload.index_type.lower()}_{uuid.uuid4().hex}.tif"
-
-    with rasterio.open(src_path) as src:
-        band = src.read(1).astype("float32")
-        nir = band
-        red = np.clip(band * 0.7, 1, 255)
-        green = np.clip(band * 0.5, 1, 255)
-        if payload.index_type.upper() == "NDVI":
-            idx = (nir - red) / (nir + red + 1e-6)
-        elif payload.index_type.upper() == "EVI":
-            idx = 2.5 * (nir - red) / (nir + 6 * red - 7.5 * green + 1)
-        elif payload.index_type.upper() == "NDWI":
-            idx = (green - nir) / (green + nir + 1e-6)
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported index type")
-        profile = src.profile.copy()
-        profile.update(dtype="float32", count=1)
-        with rasterio.open(out_path, "w", **profile) as dst:
-            dst.write(idx.astype("float32"), 1)
-    return {"status": "ok", "index_type": payload.index_type.upper()}
+    out_path = simple_index_output_path(tenant_id, payload.project_id, payload.index_type)
+    try:
+        index_type = ComputeSimpleVegetationIndex().execute(
+            src_path=src_path,
+            out_path=out_path,
+            index_type=payload.index_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", "index_type": index_type}
 
 
 @router.post("/preprocess/stack")
@@ -3217,49 +871,26 @@ def preprocess_sentinel1_recortes(
     Por cada producto Sentinel-1 (.SAFE o .zip bajo ``Sentinel1/``): apila VV+VH, recorta al polígono
     (subset espacial equivalente a SNAP Raster/Subset/Polygon) y guarda GeoTIFF en ``recortes/S1/``.
     """
-    from app.tasks.jobs import s1_grd_recortes_pipeline
+    from app.application.agro.crop_recortes import EnqueueS1GrdRecortes
 
     project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    if payload.layer_id is not None:
-        found = (
-            db.query(Layer)
-            .filter(
-                Layer.id == payload.layer_id,
-                Layer.project_id == payload.project_id,
-                Layer.tenant_id == tenant_id,
-            )
-            .first()
-        )
-        if not found:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No existe la capa vectorial {payload.layer_id} en este proyecto.",
-            )
-
-    paths = [str(x).strip().replace("\\", "/") for x in (payload.product_paths or []) if str(x).strip()]
-    if not paths:
-        raise HTTPException(status_code=400, detail="Indica al menos un producto (ruta bajo la carpeta origen).")
-
     try:
-        async_result = s1_grd_recortes_pipeline.delay(
-            tenant_id,
-            payload.project_id,
-            project.name,
-            payload.layer_id,
-            settings.database_url,
-            paths,
-            payload.source_subpath,
+        return EnqueueS1GrdRecortes().execute(
+            db=db,
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            project_name=project.name,
+            layer_id=payload.layer_id,
+            product_paths=payload.product_paths,
+            source_subpath=payload.source_subpath,
+            database_url=settings.database_url,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "No se pudo encolar el recorte Sentinel-1. Comprueba Redis y el worker Celery. "
-                f"Detalle: {exc!s}"
-            ),
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/ps-planetscope-zip-extract")
@@ -3273,22 +904,17 @@ def preprocess_ps_planetscope_zip_extract(
     Por cada ``*.zip`` en ``rasterPS/`` del proyecto: extrae ``composite.tif`` y metadatos (XML, JSON,
     ``composite_udm2.tif``) a ``rasterPS/`` como ``PS_dd-mm-yy.tif`` (originales para el recorte).
     """
-    from app.tasks.jobs import ps_planet_zip_extract_pipeline
+    from app.application.agro.ps_planet import EnqueuePsPlanetZipExtract
 
-    project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
+    require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
-        async_result = ps_planet_zip_extract_pipeline.delay(
-            tenant_id,
-            payload.project_id,
-            payload.source_subpath,
+        return EnqueuePsPlanetZipExtract().execute(
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            source_subpath=payload.source_subpath,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No se pudo encolar la extracción PS. ¿Redis y worker Celery? {exc!s}",
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/ps-tif-inventory/{project_id}")
@@ -3307,48 +933,18 @@ def get_ps_tif_inventory(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """Lista GeoTIFF a recortar en ``recortesPS/`` o ``rasterPS/`` (flujo PlanetScope)."""
-    from app.services.ps_recorte_clip import (
-        list_ps_clip_tifs,
-        normalize_ps_clip_source,
-        ps_clip_source_dir_name,
-    )
+    from app.application.agro.ps_planet import ListPsTifInventory
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    kind = normalize_ps_clip_source(source)
-    dir_label = ps_clip_source_dir_name(kind)
-
-    if source_subpath is None:
-        root = _tenant_storage(tenant_id, project_id, dir_label)
-    else:
-        root = resolve_source_subpath(tenant_id, project_id, source_subpath)
-        if root is None:
-            raise HTTPException(status_code=400, detail="Ruta de origen inválida o fuera del alcance permitido")
-
-    exists = root.is_dir()
-    items = []
-    if exists:
-        for p in list_ps_clip_tifs(root, kind):
-            bands = None
-            try:
-                with rasterio.open(p) as src:
-                    bands = int(src.count)
-            except Exception:
-                bands = None
-            items.append(
-                {
-                    "basename": p.name,
-                    "name": p.name,
-                    "bands": bands,
-                    "size_bytes": p.stat().st_size if p.is_file() else None,
-                }
-            )
-    return {
-        "items": items,
-        "source": kind,
-        "dir": dir_label,
-        "exists": exists,
-        "path": str(root),
-    }
+    try:
+        return ListPsTifInventory().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            source=source,
+            source_subpath=source_subpath,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/ps-recorte-clip")
@@ -3372,34 +968,15 @@ async def preprocess_ps_recorte_clip(
 
     Origen por defecto: ``rasterPS/`` (originales). Salida: ``recortesPS/`` (insumos de RGB e índices).
     """
-    from app.services.ps_recorte_clip import normalize_ps_clip_source
-    from app.tasks.jobs import ps_recorte_clip_pipeline
+    from app.application.agro.download import parse_optional_layer_id
+    from app.application.agro.ps_planet import EnqueuePsRecorteClip, parse_filenames_json
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    kind = normalize_ps_clip_source(source)
 
-    lid = None
-    if layer_id is not None and str(layer_id).strip() != "":
-        try:
-            lid = int(layer_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="layer_id inválido")
-        if lid < 1:
-            raise HTTPException(status_code=400, detail="layer_id inválido")
-        found = (
-            db.query(Layer)
-            .filter(
-                Layer.id == lid,
-                Layer.project_id == project_id,
-                Layer.tenant_id == tenant_id,
-            )
-            .first()
-        )
-        if not found:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No existe la capa vectorial {lid} en este proyecto.",
-            )
+    try:
+        lid = parse_optional_layer_id(layer_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     has_aoi_upload = bool(aoi_file and getattr(aoi_file, "filename", None))
     wkt: str | None = None
@@ -3423,53 +1000,25 @@ async def preprocess_ps_recorte_clip(
         from app.services.project_geometry import wkt_union_from_project_layers
 
         wkt = wkt_union_from_project_layers(db, project_id, tenant_id, lid)
-        if not wkt:
-            if lid is not None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"No se pudo leer geometría para la capa {lid} "
-                        "(archivo ausente o formato no soportado)."
-                    ),
-                )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "No hay polígono vectorial en el proyecto. Carga un lote o sube un AOI "
-                    "(GeoJSON / ZIP shapefile)."
-                ),
-            )
-
-    if not wkt:
-        raise HTTPException(status_code=400, detail="AOI vacío o inválido.")
-
-    filenames: list[str] | None = None
-    if filenames_json is not None and str(filenames_json).strip():
-        try:
-            parsed = json.loads(filenames_json)
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="filenames_json no es JSON válido") from exc
-        if not isinstance(parsed, list):
-            raise HTTPException(status_code=400, detail="filenames_json debe ser un array")
-        filenames = [str(x).strip() for x in parsed if str(x).strip()]
-        if not filenames:
-            raise HTTPException(status_code=400, detail="Selecciona al menos un TIF")
 
     try:
-        async_result = ps_recorte_clip_pipeline.delay(
-            tenant_id,
-            project_id,
-            wkt,
-            kind,
-            filenames,
-            source_subpath,
+        filenames = parse_filenames_json(filenames_json)
+        return EnqueuePsRecorteClip().execute(
+            db=db,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            wkt=wkt,
+            source=source,
+            filenames=filenames,
+            source_subpath=source_subpath,
+            layer_id=lid,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No se pudo encolar el recorte PS. ¿Redis y worker Celery? {exc!s}",
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id, "source": kind}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/preprocess/s2-l2a-recortes")
@@ -3484,62 +1033,30 @@ def preprocess_s2_l2a_recortes(
     apila 6 bandas (B02,B03,B04,B08; B05 y B11 remuestreadas a la grilla 10 m de B02), recorta al
     polígono del lote, guarda en `recortes/` (GeoTIFF con nombre del producto) y registra la capa (vista RGB R=B04,G=B03,B=B02).
     """
+    from app.application.agro.crop_recortes import EnqueueS2L2aRecortes
     from app.services.project_geometry import wkt_union_from_project_layers
-    from app.tasks.jobs import s2_l2a_recortes_pipeline
 
     project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
-
-    if payload.layer_id is not None:
-        found = (
-            db.query(Layer)
-            .filter(
-                Layer.id == payload.layer_id,
-                Layer.project_id == payload.project_id,
-                Layer.tenant_id == tenant_id,
-            )
-            .first()
-        )
-        if not found:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No existe la capa vectorial {payload.layer_id} en este proyecto.",
-            )
-
     wkt = wkt_union_from_project_layers(db, payload.project_id, tenant_id, payload.layer_id)
-    if not wkt:
-        if payload.layer_id is not None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"No se pudo leer geometría para la capa {payload.layer_id} "
-                    "(archivo ausente o formato no soportado). Comprueba el lote o elige «Todos los lotes»."
-                ),
-            )
-        raise HTTPException(
-            status_code=400,
-            detail="No hay polígono vectorial en el proyecto. Carga un lote antes.",
-        )
-
     try:
-        async_result = s2_l2a_recortes_pipeline.delay(
-            tenant_id,
-            payload.project_id,
-            project.name,
-            payload.layer_id,
-            settings.database_url,
-            payload.product_names,
-            payload.source_subpath,
-            normalize_pipeline_variant(payload.pipeline_variant),
+        return EnqueueS2L2aRecortes().execute(
+            db=db,
+            tenant_id=tenant_id,
+            project_id=payload.project_id,
+            project_name=project.name,
+            layer_id=payload.layer_id,
+            wkt=wkt,
+            product_names=payload.product_names,
+            source_subpath=payload.source_subpath,
+            pipeline_variant=payload.pipeline_variant,
+            database_url=settings.database_url,
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "No se pudo encolar la tarea de recorte. Comprueba que Redis esté en marcha "
-                f"y el worker Celery activo. Detalle: {exc!s}"
-            ),
-        ) from exc
-    return {"status": "queued", "task_id": async_result.id}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 _LANDING_MARKDOWN_NAMES = {
@@ -3557,6 +1074,7 @@ def landing_markdown_generate(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     """Encola la generación de los 3 Markdown de la landing (PS, S1, S2), cada uno ≤ 4.9 MB."""
+    from app.core.celery_task_registry import register_celery_task
     from app.tasks.jobs import landing_markdown_pipeline
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
@@ -3567,6 +1085,7 @@ def landing_markdown_generate(
             status_code=503,
             detail=f"No se pudo encolar la generación de Markdown (Redis/worker): {exc!s}",
         ) from exc
+    register_celery_task(async_result.id, tenant_id=tenant_id, project_id=project_id, task_name="landing_markdown_pipeline")
     return {"status": "queued", "task_id": async_result.id}
 
 
@@ -3617,11 +1136,20 @@ def landing_markdown_download(
 
 
 @router.get("/preprocess/task-status/{task_id}")
-def preprocess_task_status(task_id: str):
-    """Estado de una tarea Celery (p. ej. pipeline S2 L2A recortes)."""
+def preprocess_task_status(
+    task_id: str,
+    _user: User = Depends(get_current_user),
+    tenant_id: int = Depends(tenant_from_jwt),
+):
+    """Estado de una tarea Celery. Solo visible para el tenant que la encoló."""
     from celery.result import AsyncResult
 
+    from app.core.celery_task_registry import get_celery_task_owner
     from app.tasks.celery_app import celery_app
+
+    owner = get_celery_task_owner(task_id)
+    if not owner or int(owner["tenant_id"]) != int(tenant_id):
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
 
     ar = AsyncResult(task_id, app=celery_app)
     if ar.state == "PENDING":
@@ -3654,28 +1182,22 @@ def ps_spatiotemporal_cluster_run(
     ``preset=smart2``: EVI (mean/std/min), NDRE_mean, NDWI_mean/std, VARI_mean.
     ``preset=smart3``: KNDVI (mean/std/min), MCARI_mean, NDWI_mean/std, VARI_mean.
     """
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
-    try:
-        pr = get_preset(preset)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from app.application.agro.ps_planet import RunPsSpatiotemporalCluster
+
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     opts = body or PsSpatiotemporalClusterRequest()
-    index_root = _tenant_storage(tenant_id, project_id, indices_dir_name("ps"))
-    out_dir = _tenant_storage(tenant_id, project_id, pr.output_subdir)
     try:
-        meta = run_ps_spatiotemporal_cluster(
-            index_root,
-            out_dir,
-            preset_id=pr.id,
+        return RunPsSpatiotemporalCluster().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            preset=preset,
             n_clusters=opts.n_clusters,
             random_state=opts.random_state,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("ps_spatiotemporal_cluster failed")
-        raise HTTPException(status_code=500, detail=f"Error en pipeline: {exc!s}") from exc
-    return {"status": "ok", "meta": meta}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/preprocess/ps-spatiotemporal-cluster-status/{project_id}")
@@ -3686,24 +1208,17 @@ def ps_spatiotemporal_cluster_status(
     tenant_id: int = Depends(tenant_from_jwt),
     preset: str = Query("smart1", description="smart1, smart2 o smart3"),
 ):
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.ps_planet import GetPsSpatiotemporalClusterStatus
+
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        pr = get_preset(preset)
+        return GetPsSpatiotemporalClusterStatus().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            preset=preset,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    out_dir = _tenant_storage(tenant_id, project_id, pr.output_subdir)
-    if not out_dir.is_dir():
-        for legacy_subdir in pr.legacy_output_subdirs:
-            legacy_dir = _tenant_storage(tenant_id, project_id, legacy_subdir)
-            if legacy_dir.is_dir():
-                out_dir = legacy_dir
-                break
-    map_path = out_dir / "final_cluster_map.tif"
-    return {
-        "ready": map_path.is_file(),
-        "preset": pr.id,
-        "meta": load_meta(out_dir),
-    }
 
 
 @router.get("/preprocess/ps-spatiotemporal-cluster-preview/{project_id}")
@@ -3715,25 +1230,19 @@ def ps_spatiotemporal_cluster_preview(
     preset: str = Query("smart1", description="smart1, smart2 o smart3"),
 ):
     """PNG del mapa de clusters (colores discretos)."""
-    project = require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.ps_planet import GetPsSpatiotemporalClusterPreviewPng
+
+    require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        pr = get_preset(preset)
+        png = GetPsSpatiotemporalClusterPreviewPng().execute(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            preset=preset,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    out_dir = _tenant_storage(tenant_id, project_id, pr.output_subdir)
-    map_path = out_dir / "final_cluster_map.tif"
-    if not map_path.is_file():
-        for legacy_subdir in pr.legacy_output_subdirs:
-            legacy_map_path = _tenant_storage(tenant_id, project_id, legacy_subdir) / "final_cluster_map.tif"
-            if legacy_map_path.is_file():
-                map_path = legacy_map_path
-                break
-    if not map_path.is_file():
-        raise HTTPException(status_code=404, detail="Aún no hay mapa de cluster. Ejecuta POST ps-spatiotemporal-cluster.")
-    try:
-        png = cluster_map_to_png(map_path.resolve())
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"No se pudo generar la vista previa: {exc!s}") from exc
     return Response(
         content=png,
         media_type="image/png",

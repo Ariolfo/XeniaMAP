@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import api, { API_URL, formatApiErrorDetail, setAuthToken } from "../../api";
 import { adaptInventories } from "../dataAdapter";
-import { fetchPreviewDataUrl, normIso } from "../previewUtils";
+import { fetchPreviewDataUrl } from "../previewUtils";
 
 const SOIL_KINDS = ["dem", "cv", "aspect", "slope", "cluster", "bars", "qchart"];
 

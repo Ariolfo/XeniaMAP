@@ -1,7 +1,7 @@
 """Offline checks for fire result catalog and severity labels."""
 from __future__ import annotations
 
-from app.api.v1.fire_orders import FIRE_RESULT_CATALOG
+from app.application.fire.catalog import FIRE_RESULT_CATALOG
 from app.services.raster_geo import BURN_SEVERITY_CLASS_LABELS
 
 

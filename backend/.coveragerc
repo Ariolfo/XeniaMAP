@@ -1,0 +1,9 @@
+[run]
+source = app/application
+
+[report]
+show_missing = true
+skip_covered = true
+
+[html]
+directory = htmlcov

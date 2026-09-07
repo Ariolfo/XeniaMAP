@@ -2,16 +2,20 @@
 
 Runbook **privado / local**. No forma parte del producto público.
 
-## Túnel actual
+## Prerrequisito
+
+Stack Docker levantado (frontend en `:5173`):
+
+```bash
+cd /path/to/XeniaMAP
+docker compose up -d
+```
+
+## Túnel
 
 Dominio reservado: `https://xeniamap.ngrok.app` → frontend Vite en `:5173`.
 
 ```bash
-# Desde la raíz del repo (ajusta la ruta a tu máquina)
-cd /path/to/XeniaMAP
-docker compose up -d
-
-# Túnel (requiere cuenta ngrok + dominio reservado)
 ngrok http --url=xeniamap.ngrok.app 5173
 ```
 

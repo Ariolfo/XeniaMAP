@@ -75,3 +75,14 @@ def _existing_raster_path(raster: RasterLayer) -> Path:
     if raw.exists():
         return raw
     raise HTTPException(status_code=404, detail="Raster file not available")
+
+
+def _safe_relative_under(root: Path, p: Path) -> str | None:
+    """Ruta posix relativa a ``root`` o None si ``p`` no queda bajo ``root``."""
+    try:
+        root_r = root.resolve()
+        pr = p.resolve()
+        rel = pr.relative_to(root_r)
+        return rel.as_posix()
+    except ValueError:
+        return None

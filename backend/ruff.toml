@@ -1,0 +1,22 @@
+# Ruff — F7 Calidad (CI). Reglas críticas primero; format completo no es gate aún.
+target-version = "py311"
+line-length = 100
+src = ["app", "tests"]
+
+[lint]
+select = [
+  "E9",   # syntax errors
+  "F63",  # invalid print/statements
+  "F7",   # syntax errors in future annotations etc
+  "F82",  # undefined names in __all__
+  "E71",  # comparison to True/False/None
+  "E72",  # bare except related
+]
+ignore = []
+
+[lint.per-file-ignores]
+"tests/*" = ["E71"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

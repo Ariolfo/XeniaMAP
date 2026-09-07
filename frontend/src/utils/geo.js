@@ -147,6 +147,62 @@ export function buildBaseStyle(kind) {
   };
 }
 
+/** Capas del mapa base (OSM / Esri / labels). No son overlays de proyecto. */
+export const BASEMAP_LAYER_IDS = ["osm", "esri", "labels"];
+
+export function isBasemapLayerId(id) {
+  return BASEMAP_LAYER_IDS.includes(id);
+}
+
+/**
+ * Cambia vectorial / satelital / híbrido sin ``map.setStyle`` (no destruye overlays).
+ */
+export function applyBasemap(map, kind) {
+  if (!map || typeof map.getStyle !== "function") return;
+  const style = map.getStyle();
+  if (!style) return;
+
+  const layers = style.layers || [];
+  const firstOverlay = layers.find((l) => !isBasemapLayerId(l.id));
+  const beforeId = firstOverlay?.id;
+
+  for (const id of BASEMAP_LAYER_IDS) {
+    try {
+      if (map.getLayer(id)) map.removeLayer(id);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  for (const id of BASEMAP_LAYER_IDS) {
+    try {
+      if (map.getSource(id)) map.removeSource(id);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  const addBottom = (layerDef) => {
+    try {
+      if (beforeId && map.getLayer(beforeId)) map.addLayer(layerDef, beforeId);
+      else map.addLayer(layerDef);
+    } catch (_) {
+      try {
+        map.addLayer(layerDef);
+      } catch (__) {
+        /* ignore */
+      }
+    }
+  };
+
+  const next = buildBaseStyle(kind || "vectorial");
+  for (const [sid, source] of Object.entries(next.sources || {})) {
+    if (!map.getSource(sid)) map.addSource(sid, source);
+  }
+  for (const layerDef of next.layers || []) {
+    addBottom(layerDef);
+  }
+}
+
 /** Clave YYYY-MM-DD para ordenar recortes Sentinel */
 export function rasterSortKeyFromMetadata(metadata) {
   if (!metadata || typeof metadata !== "object") return "";

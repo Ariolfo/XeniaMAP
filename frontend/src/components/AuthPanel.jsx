@@ -8,6 +8,7 @@ export default function AuthPanel({
   loading,
   authStep,
   otpDebug,
+  otpHint,
   onContinueEmail,
   onVerifyOtp,
   onLogin,
@@ -27,7 +28,7 @@ export default function AuthPanel({
             ? "Paso 1: indique su correo. Si es admin, se pedirá contraseña; usuarios cliente usan código."
             : authStep === "password"
               ? "Este correo ya está registrado. Ingrese su contraseña."
-              : "Paso 2: introduzca el código de verificación (simulación actual: 12345678)."}
+              : otpHint || "Paso 2: introduzca el código de verificación enviado a su correo."}
       </p>
       <label>
         Correo electrónico
@@ -82,19 +83,20 @@ export default function AuthPanel({
 
       {authStep === "otp" ? (
         <>
-          <p className="auth-otp-hint">Mientras se integra el correo, use el código de verificación: 12345678.</p>
           {otpDebug ? (
             <p className="auth-otp-debug">
-              <strong>Modo prueba:</strong> código <code>{otpDebug}</code> (variable LOG_OTP=1 en el servidor)
+              <strong>Modo desarrollo:</strong> código <code>{otpDebug}</code>
             </p>
-          ) : null}
+          ) : (
+            <p className="auth-otp-hint">Revise su correo e ingrese el código de 8 dígitos.</p>
+          )}
           <label>
             Código de verificación
             <input
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
-              placeholder="Código (ej. 12345678)"
+              placeholder="Código de 8 dígitos"
               value={otpLocal}
               onChange={(e) => setOtpLocal(e.target.value)}
               onKeyDown={(e) => {

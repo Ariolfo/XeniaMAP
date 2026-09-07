@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api, { setAuthToken } from "../api";
-import { bboxFromGeojson, kmlToGeojson, kmzToGeojson } from "../utils/geo";
+import { kmlToGeojson, kmzToGeojson } from "../utils/geo";
 
 const CROPS = ["Maíz", "Arroz", "Café", "Caña", "Palma", "Otro"];
 

@@ -4,10 +4,13 @@ Revision ID: 20260904_fire_orders
 Revises: 20260714_landing_texts
 Create Date: 2026-09-04
 
+Idempotent: safe if table already created by infrastructure/postgres/init.sql.
+Pipeline columns may already exist (init ships full shape); 20260905 fills gaps.
 """
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "20260904_fire_orders"
@@ -17,6 +20,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if "fire_orders" in insp.get_table_names():
+        return
+
     op.create_table(
         "fire_orders",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -51,8 +59,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_fire_orders_created_by_user_id", table_name="fire_orders")
-    op.drop_index("ix_fire_orders_source_key", table_name="fire_orders")
-    op.drop_index("ix_fire_orders_status", table_name="fire_orders")
-    op.drop_index("ix_fire_orders_tenant_id", table_name="fire_orders")
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if "fire_orders" not in insp.get_table_names():
+        return
+    indexes = {ix["name"] for ix in insp.get_indexes("fire_orders") if ix.get("name")}
+    for name in (
+        "ix_fire_orders_created_by_user_id",
+        "ix_fire_orders_source_key",
+        "ix_fire_orders_status",
+        "ix_fire_orders_tenant_id",
+    ):
+        if name in indexes:
+            op.drop_index(name, table_name="fire_orders")
     op.drop_table("fire_orders")

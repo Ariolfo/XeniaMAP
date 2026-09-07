@@ -42,6 +42,12 @@ data/
 venv/
 .venv/
 
+# Coverage / pytest
+.coverage
+htmlcov/
+.pytest_cache/
+**/__pycache__/
+
 # P0 hygiene — local ops artifacts / legacy research (kept outside this repo)
 backups/
 *.sql

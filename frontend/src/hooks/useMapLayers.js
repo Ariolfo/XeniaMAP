@@ -1,37 +1,50 @@
 import { useRef, useState } from "react";
 import { bboxFromGeojson } from "../utils/geo";
+import { createLayerDescriptor, createLayerStore } from "../map/LayerStore";
 
+/**
+ * Hook React sobre LayerStore único (F6).
+ * Mantiene mapLayers / mapLayersRef sincronizados con el store.
+ */
 export default function useMapLayers(mapRef) {
+  const storeRef = useRef(null);
+  if (!storeRef.current) {
+    storeRef.current = createLayerStore();
+  }
+  const store = storeRef.current;
+
   const [mapLayers, setMapLayers] = useState([]);
   const mapLayersRef = useRef([]);
-  const layerIdCounter = useRef(1);
   const [pendingDeletes, setPendingDeletes] = useState([]);
   const [dirty, setDirty] = useState(false);
 
+  function sync(next) {
+    mapLayersRef.current = next;
+    store.replaceAll(next);
+    setMapLayers(next);
+  }
+
   function addMapLayer(name, kind, geojsonData, serverId, options = {}) {
-    const lid = `layer_${layerIdCounter.current++}`;
+    const lid = store.nextLayerId();
     const bbox =
       options.bbox != null
         ? options.bbox
         : geojsonData
           ? bboxFromGeojson(geojsonData)
           : null;
-    const entry = {
+    const entry = createLayerDescriptor({
       id: lid,
       name,
       kind,
-      visible: options.visible !== false,
       geojsonData,
+      serverId,
+      options,
       bbox,
-      serverId: serverId || null,
-      metadata: options.metadata ?? null,
-      displayName: options.displayName ?? name,
-    };
-    setMapLayers((prev) => {
-      const next = options.append ? [...prev, entry] : [entry, ...prev];
-      mapLayersRef.current = next;
-      return next;
     });
+    const next = options.append
+      ? [...mapLayersRef.current, entry]
+      : [entry, ...mapLayersRef.current];
+    sync(next);
     return lid;
   }
 
@@ -51,58 +64,72 @@ export default function useMapLayers(mapRef) {
       ]);
       setDirty(true);
     }
-    setMapLayers((prev) => {
-      const next = prev.filter((l) => l.id !== lid);
-      mapLayersRef.current = next;
-      return next;
-    });
+    sync(mapLayersRef.current.filter((l) => l.id !== lid));
   }
 
   function toggleLayerVisibility(lid) {
-    setMapLayers((prev) => {
-      const next = prev.map((l) => {
-        if (l.id !== lid) return l;
-        const vis = !l.visible;
-        const map = mapRef.current;
-        if (map) {
-          if (map.getLayer(lid)) {
-            map.setLayoutProperty(lid, "visibility", vis ? "visible" : "none");
-          }
-          if (map.getLayer(`${lid}_outline`)) {
-            map.setLayoutProperty(`${lid}_outline`, "visibility", vis ? "visible" : "none");
-          }
-        }
-        return { ...l, visible: vis };
-      });
-      mapLayersRef.current = next;
-      return next;
-    });
+    const cur = mapLayersRef.current.find((l) => l.id === lid);
+    if (!cur) return;
+    const vis = !cur.visible;
+    const map = mapRef.current;
+    if (map) {
+      if (map.getLayer(lid)) {
+        map.setLayoutProperty(lid, "visibility", vis ? "visible" : "none");
+      }
+      if (map.getLayer(`${lid}_outline`)) {
+        map.setLayoutProperty(`${lid}_outline`, "visibility", vis ? "visible" : "none");
+      }
+    }
+    sync(
+      mapLayersRef.current.map((l) => (l.id === lid ? { ...l, visible: vis } : l))
+    );
   }
 
   /** Solo estado visible + lienzo; no borra la capa del proyecto ni del servidor. */
   function setLayerVisibility(lid, visible) {
-    setMapLayers((prev) => {
-      const next = prev.map((l) => {
+    const map = mapRef.current;
+    if (map) {
+      if (map.getLayer(lid)) {
+        map.setLayoutProperty(lid, "visibility", visible ? "visible" : "none");
+      }
+      if (map.getLayer(`${lid}_outline`)) {
+        map.setLayoutProperty(`${lid}_outline`, "visibility", visible ? "visible" : "none");
+      }
+    }
+    sync(
+      mapLayersRef.current.map((l) =>
+        l.id === lid ? { ...l, visible: !!visible } : l
+      )
+    );
+  }
+
+  function patchMapLayer(lid, patch) {
+    sync(
+      mapLayersRef.current.map((l) => {
         if (l.id !== lid) return l;
-        const map = mapRef.current;
-        if (map) {
-          if (map.getLayer(lid)) {
-            map.setLayoutProperty(lid, "visibility", visible ? "visible" : "none");
-          }
-          if (map.getLayer(`${lid}_outline`)) {
-            map.setLayoutProperty(`${lid}_outline`, "visibility", visible ? "visible" : "none");
-          }
-        }
-        return { ...l, visible };
-      });
-      mapLayersRef.current = next;
-      return next;
-    });
+        const meta =
+          patch.metadata !== undefined
+            ? { ...(l.metadata || {}), ...(patch.metadata || {}) }
+            : l.metadata;
+        return {
+          ...l,
+          ...patch,
+          metadata: meta,
+          id: l.id,
+        };
+      })
+    );
   }
 
   function clearAllMapLayers() {
     const map = mapRef.current;
     mapLayersRef.current.forEach((l) => {
+      const blob = l?.metadata?.previewBlobUrl;
+      if (blob) {
+        try {
+          URL.revokeObjectURL(blob);
+        } catch (_) {}
+      }
       if (map) {
         if (map.getLayer(l.id)) map.removeLayer(l.id);
         if (map.getLayer(l.id + "_outline")) map.removeLayer(l.id + "_outline");
@@ -122,14 +149,15 @@ export default function useMapLayers(mapRef) {
         if (map.getSource(satSrc)) map.removeSource(satSrc);
       } catch (_) {}
     }
-    setMapLayers([]);
+    store.clear();
     mapLayersRef.current = [];
-    layerIdCounter.current = 1;
+    setMapLayers([]);
   }
 
   return {
     mapLayers,
     mapLayersRef,
+    layerStore: store,
     pendingDeletes,
     setPendingDeletes,
     dirty,
@@ -138,6 +166,7 @@ export default function useMapLayers(mapRef) {
     removeMapLayer,
     toggleLayerVisibility,
     setLayerVisibility,
+    patchMapLayer,
     clearAllMapLayers,
   };
 }

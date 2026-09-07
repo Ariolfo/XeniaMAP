@@ -4,9 +4,41 @@ on:
   push:
   pull_request:
 
+env:
+  SECRET_KEY: ci-xeniamap-test-secret-key-do-not-use-in-prod
+  OTP_SIMULATE: "1"
+  ADMIN_EMAILS: ""
+
 jobs:
+  backend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install -r backend/requirements-dev.txt
+      - name: Ruff check
+        working-directory: backend
+        run: ruff check app tests
+
   backend-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:14-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: xeniamap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,9 +48,87 @@ jobs:
         run: |
           cd backend
           pip install -r requirements.txt
-          pip install pytest httpx
+          pip install -r requirements-dev.txt
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Alembic upgrade
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/xeniamap
+          PGPASSWORD: postgres
+          SECRET_KEY: ${{ env.SECRET_KEY }}
+        run: |
+          # Cold-start DDL for tables not owned by Alembic
+          psql -h localhost -U postgres -d xeniamap -v ON_ERROR_STOP=1 \
+            -f ../infrastructure/postgres/init.sql
+          alembic upgrade head
       - name: Run backend tests
         working-directory: backend
         env:
           PYTHONPATH: .
-        run: pytest -q
+          SECRET_KEY: ${{ env.SECRET_KEY }}
+          OTP_SIMULATE: "1"
+          ADMIN_EMAILS: ""
+          DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/xeniamap
+          REDIS_URL: redis://localhost:6379/0
+        run: >
+          pytest -q
+          --cov=app.application
+          --cov-config=.coveragerc
+          --cov-report=term-missing:skip-covered
+          --cov-fail-under=15
+
+  frontend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install and lint
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+  docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required architecture / ops docs
+        run: |
+          set -euo pipefail
+          for f in \
+            docs/architecture.md \
+            docs/ops/bootstrap.md \
+            docs/ops/docker.md \
+            docs/ops/adr-001-storage-hybrid.md \
+            docs/ops/quality.md \
+            docs/ops/legacy_names.md \
+            docs/ops/permissions_cliente.md \
+            README.md
+          do
+            test -s "$f" || { echo "missing or empty: $f"; exit 1; }
+          done
+          grep -q "F7 Calidad" docs/architecture.md
+          grep -q "/metrics" docs/ops/quality.md
+          grep -q "require_project_dashboard_access" docs/ops/permissions_cliente.md
+          grep -q "xeniamap-backend:local" docs/ops/docker.md
+          echo "docs-check OK"

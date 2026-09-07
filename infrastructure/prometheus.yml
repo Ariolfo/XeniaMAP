@@ -1,7 +1,21 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
+  # FastAPI + prometheus_fastapi_instrumentator → GET /metrics
+  # Incluye xeniamap_firms_live_cache_* y xeniamap_celery_tasks_enqueued_*
   - job_name: "xeniamap-backend"
+    metrics_path: /metrics
     static_configs:
       - targets: ["backend:8000"]
+        labels:
+          service: xeniamap-api
+
+  # Worker Celery (signals → Counter/Histogram en :9101)
+  - job_name: "xeniamap-celery-worker"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9101"]
+        labels:
+          service: xeniamap-celery

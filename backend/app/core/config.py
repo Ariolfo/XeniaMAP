@@ -66,13 +66,16 @@ class Settings(BaseSettings):
     # Límite por IP (middleware en ``main.py``); galerías RGB lanzan muchas peticiones en paralelo.
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 600
-    ai_service_url: str = "http://localhost:8001"
+    ai_service_url: str = Field(
+        default="http://localhost:8001",
+        description="Stub IA opcional (perfil compose ``ai``). No requerido para Agro/Fire.",
+    )
     storage_path: str = Field(default_factory=_default_storage_path)
-    # Disco local de datos grandes (recorte S1/S2/PS). En Docker: montar host → /data_bioagro.
-    # Vacío = deshabilitado. Ejemplo host (nombre de carpeta en el host): /mnt/disco3tb/Data_Bioagro
+    # Disco local de datos grandes (recorte S1/S2/PS). En Docker: montar host → /data_xeniamap.
+    # Vacío = deshabilitado. Ejemplo host: /mnt/disco3tb/Data_XeniaMap
     external_data_root: str = Field(
         default="",
-        description="Raíz de datos externos locales (solo lectura lógica). Subpaths vía prefijo ext:.",
+        description="Raíz Data_XeniaMap (datos externos). Subpaths vía prefijo ext:.",
     )
     max_upload_mb: int = 4096  # Sentinel-2 ZIP; variable de entorno MAX_UPLOAD_MB tiene prioridad
     copernicus_user: str = Field(
@@ -81,12 +84,26 @@ class Settings(BaseSettings):
     )
     copernicus_password: str = Field(default="", description="Contraseña CDSE (Sentinel-2 / Sentinel-1).")
     order_notify_email: str = Field(
-        default="ariolfo.camacho@saber.uis.edu.co",
+        default="",
         description="Destino de notificaciones de nuevas solicitudes de estudio AgroGeoFísico.",
     )
+    admin_emails: str = Field(
+        default="",
+        description="Correos bootstrap admin (coma-separados). Vacío = nadie por lista; usar rol en DB.",
+    )
+    otp_simulate: bool = Field(
+        default=False,
+        description="Si true, OTP fijo/depurable sin SMTP (solo desarrollo). En prod: false + SMTP.",
+    )
+    otp_ttl_sec: int = Field(default=600, ge=60, le=3600, description="TTL del OTP en segundos.")
     firms_map_key: str = Field(
         default="",
         description="NASA FIRMS MAP_KEY para validación VIIRS del módulo Fire.",
+    )
+    firms_live_cache_ttl_sec: int = Field(
+        default=300,
+        ge=0,
+        description="TTL (s) de cache Redis/memoria para GET firms-live. 0 = sin cache.",
     )
     smtp_host: str = ""
     smtp_port: int = 587
@@ -103,6 +120,16 @@ class Settings(BaseSettings):
         ),
     )
     model_config = _settings_model_config()
+
+    def bootstrap_admin_emails(self) -> set[str]:
+        return {
+            e.strip().lower()
+            for e in (self.admin_emails or "").split(",")
+            if e.strip()
+        }
+
+    def is_bootstrap_admin(self, email: str) -> bool:
+        return str(email or "").strip().lower() in self.bootstrap_admin_emails()
 
     @field_validator("secret_key")
     @classmethod

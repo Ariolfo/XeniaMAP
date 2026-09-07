@@ -57,6 +57,14 @@ def layer_to_geojson(layer: Layer) -> dict | None:
                         result = _kml_to_geojson(zf.read(name).decode("utf-8"))
                         if result:
                             return result
+            # Shapefile ZIP (sin geojson/kml embebido)
+            from app.services.aoi_vector import geojson_from_vector_path
+
+            return geojson_from_vector_path(fp)
+        if ext == ".shp":
+            from app.services.aoi_vector import geojson_from_vector_path
+
+            return geojson_from_vector_path(fp)
     except Exception:
         pass
     return None

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.cdse_client import (
+from app.infrastructure.cdse.client import (
     TOKEN_URL,
     get_copernicus_credentials,
     get_copernicus_token,
@@ -20,7 +20,7 @@ def test_get_copernicus_token_success() -> None:
     mock_resp.json.return_value = {"access_token": "tok-abc"}
     mock_resp.raise_for_status = MagicMock()
 
-    with patch("app.services.cdse_client.requests.post", return_value=mock_resp) as post:
+    with patch("app.infrastructure.cdse.client.requests.post", return_value=mock_resp) as post:
         token = get_copernicus_token("user@example.com", "secret")
 
     assert token == "tok-abc"
@@ -30,6 +30,19 @@ def test_get_copernicus_token_success() -> None:
     assert kwargs["data"]["grant_type"] == "password"
     assert kwargs["data"]["username"] == "user@example.com"
     assert kwargs["timeout"] == 30
+
+
+def test_cdse_auth_adapter_roundtrip() -> None:
+    from app.infrastructure.cdse.client import CdseAuthAdapter
+
+    adapter = CdseAuthAdapter()
+    settings = SimpleNamespace(copernicus_user="u", copernicus_password="p")
+    assert adapter.credentials_from_settings(settings) == ("u", "p")
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"access_token": "t1"}
+    mock_resp.raise_for_status = MagicMock()
+    with patch("app.infrastructure.cdse.client.requests.post", return_value=mock_resp):
+        assert adapter.access_token("u", "p") == "t1"
 
 
 def test_get_copernicus_credentials_empty_raises() -> None:

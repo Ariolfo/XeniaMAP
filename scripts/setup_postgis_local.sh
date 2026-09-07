@@ -17,7 +17,9 @@ sudo -u postgres createdb "${DB_NAME}" -O "${DB_USER}" || true
 sudo -u postgres psql -d "${DB_NAME}" -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 sudo -u postgres psql -d "${DB_NAME}" -c "CREATE EXTENSION IF NOT EXISTS postgis_raster;"
 
-echo "[4/4] Applying base schema..."
+echo "[4/4] Applying base schema (init.sql)..."
 sudo -u postgres psql -d "${DB_NAME}" -f infrastructure/postgres/init.sql
 
 echo "PostGIS local setup completed."
+echo "Next (required): cd backend && alembic upgrade head"
+echo "See docs/ops/bootstrap.md"

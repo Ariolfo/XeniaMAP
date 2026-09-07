@@ -22,10 +22,11 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 
-from app.services.cdse_client import (
+from app.domain.shared.ports import CdseAuthPort
+from app.infrastructure.cdse.client import (
     CATALOGUE_URL,
     STAC_SEARCH_URL,
-    get_copernicus_token,
+    CdseAuthAdapter,
     odata_attribute,
 )
 
@@ -147,8 +148,12 @@ def query_s2_l2a_products(
     return products
 
 
-def _get_oauth_token(username: str, password: str) -> str:
-    return get_copernicus_token(username, password)
+def _get_oauth_token(
+    username: str,
+    password: str,
+    auth: CdseAuthPort | None = None,
+) -> str:
+    return (auth or CdseAuthAdapter()).access_token(username, password)
 
 
 def _stac_required_assets(product_name: str, session: requests.Session) -> Dict[str, str]:
@@ -358,6 +363,7 @@ def download_period(
     max_cloud_cover: float,
     output_root: Path,
     progress: ProgressCb = None,
+    auth: CdseAuthPort | None = None,
 ) -> Dict:
     products = query_s2_l2a_products(aoi_wkt, start_date, end_date, max_cloud_cover)
     products = sorted(products, key=sensing_datetime_from_product)
@@ -373,14 +379,14 @@ def download_period(
             "manifest": str(output_root / f"catalog_{period}.csv"),
         }
 
+    cdse_auth = auth or CdseAuthAdapter()
     s3_client = _get_s3_client()
     oauth_session: Optional[requests.Session] = None
     if s3_client is None:
-        from app.services.cdse_client import get_copernicus_credentials
         from app.core.config import settings
 
-        user, password = get_copernicus_credentials(settings)
-        token = _get_oauth_token(user, password)
+        user, password = cdse_auth.credentials_from_settings(settings)
+        token = cdse_auth.access_token(user, password)
         oauth_session = requests.Session()
         oauth_session.headers.update({"Authorization": f"Bearer {token}"})
 
@@ -425,11 +431,13 @@ def run_fire_s2_download(
     max_cloud_cover: float,
     output_root: str | Path,
     progress: ProgressCb = None,
+    auth: CdseAuthPort | None = None,
 ) -> Dict:
     t0 = time.perf_counter()
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     aoi_wkt = geometry_to_search_wkt(geometry)
+    cdse_auth = auth or CdseAuthAdapter()
 
     def _wrap(done: int, total: int, msg: str, offset: int = 0, span: int = 50) -> None:
         if not progress:
@@ -445,6 +453,7 @@ def run_fire_s2_download(
         max_cloud_cover=max_cloud_cover,
         output_root=root,
         progress=lambda d, t, m: _wrap(d, t, m, 0, 45),
+        auth=cdse_auth,
     )
     post = download_period(
         period="post",
@@ -454,6 +463,7 @@ def run_fire_s2_download(
         max_cloud_cover=max_cloud_cover,
         output_root=root,
         progress=lambda d, t, m: _wrap(d, t, m, 45, 50),
+        auth=cdse_auth,
     )
     if progress:
         progress(100, 100, "Descarga Fire S2 finalizada")

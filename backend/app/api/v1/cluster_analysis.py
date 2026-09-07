@@ -223,9 +223,9 @@ CLUSTER_PIPELINE_BUILD = "2026-07-20a.s1-background-nodata-mask"
 
 
 @router.get("/cluster-analysis/capabilities")
-def cluster_capabilities():
+def cluster_capabilities(_user: User = Depends(get_current_user)):
     """
-    Sin autenticación: comprueba qué código está cargado en el servidor (útil con Docker/volúmenes).
+    Requiere autenticación. Comprueba qué código de clustering está cargado (útil con Docker/volúmenes).
     """
     import app.services.satellite_clustering as scm
 
