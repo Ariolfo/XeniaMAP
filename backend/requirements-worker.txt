@@ -1,5 +1,7 @@
-# Worker Celery image (H5). Full GIS + room for SNAP/native extras without bloating API.
--r requirements.txt
+# Worker Celery image (H6): common + AWS SDK (Fire S2 download) + room for SNAP/GDAL.
+-r requirements-common.txt
+boto3==1.35.36
+botocore==1.35.36
 # Future worker-only pins (example):
 # snapista==...
 # gdal==...

@@ -12,10 +12,20 @@ scrape_configs:
         labels:
           service: xeniamap-api
 
-  # Worker Celery (signals → Counter/Histogram en :9101)
-  - job_name: "xeniamap-celery-worker"
+  # Worker Celery Agro (cola agro) — :9101
+  - job_name: "xeniamap-celery-worker-agro"
     metrics_path: /metrics
     static_configs:
-      - targets: ["worker:9101"]
+      - targets: ["worker-agro:9101"]
         labels:
           service: xeniamap-celery
+          queue: agro
+
+  # Worker Celery Fire (cola fire) — :9102
+  - job_name: "xeniamap-celery-worker-fire"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker-fire:9102"]
+        labels:
+          service: xeniamap-celery
+          queue: fire

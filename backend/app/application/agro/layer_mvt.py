@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Sequence
 
-from sqlalchemy import bindparam, text
-from sqlalchemy.orm import Session
-
-from app.models.models import Layer
+from app.domain.agro.repositories import LayerRepository
 from app.domain.shared.ports import TileRenderPort
 from app.infrastructure.composition import default_tile_render
+from app.models.models import Layer
 from app.services.project_geometry import (
     _geometries_wgs84_from_geojson,
     layer_to_geojson,
@@ -40,47 +38,19 @@ def geometry_geojson_for_postgis(geojson_data: dict) -> str | None:
     return json.dumps(mapping(g))
 
 
-def layer_geom_meta(db: Session, *, layer_ids: list[int]) -> dict[int, dict[str, Any]]:
+def layer_geom_meta(
+    layers: LayerRepository, *, layer_ids: Sequence[int]
+) -> dict[int, dict[str, Any]]:
     """``mvt_ready`` + bbox WGS84 ``[w,s,e,n]`` por layer id."""
-    if not layer_ids:
-        return {}
-    stmt = text(
-        """
-        SELECT id,
-               (geom IS NOT NULL) AS mvt_ready,
-               CASE
-                 WHEN geom IS NULL THEN NULL
-                 ELSE ARRAY[
-                   ST_XMin(geom)::float8,
-                   ST_YMin(geom)::float8,
-                   ST_XMax(geom)::float8,
-                   ST_YMax(geom)::float8
-                 ]
-               END AS bbox
-        FROM layers
-        WHERE id IN :ids
-        """
-    ).bindparams(bindparam("ids", expanding=True))
-    rows = db.execute(stmt, {"ids": layer_ids}).mappings()
-    out: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        bbox = row["bbox"]
-        if bbox is not None:
-            bbox = [float(x) for x in bbox]
-        out[int(row["id"])] = {
-            "mvt_ready": bool(row["mvt_ready"]),
-            "bbox": bbox,
-        }
-    return out
+    return layers.geom_meta(layer_ids)
 
 
 class SyncLayerGeom:
     """Lee el archivo de la capa y escribe ``layers.geom`` (EPSG:4326)."""
 
-    def execute(self, db: Session, *, layer: Layer) -> dict[str, Any]:
+    def execute(self, layers: LayerRepository, *, layer: Layer) -> dict[str, Any]:
         geo = layer_to_geojson(layer)
         if not geo:
-            # Shapefile / ZIP shapefile vía geopandas
             from pathlib import Path
 
             from app.services.aoi_vector import geojson_from_vector_path
@@ -100,25 +70,13 @@ class SyncLayerGeom:
         if not geom_json:
             return {"ok": False, "mvt_ready": False, "bbox": None, "detail": "empty_geom"}
 
-        db.execute(
-            text(
-                """
-                UPDATE layers
-                SET geom = ST_SetSRID(ST_MakeValid(ST_GeomFromGeoJSON(:gj)), 4326)
-                WHERE id = :id
-                  AND tenant_id = :tid
-                  AND project_id = :pid
-                """
-            ),
-            {
-                "gj": geom_json,
-                "id": layer.id,
-                "tid": layer.tenant_id,
-                "pid": layer.project_id,
-            },
+        layers.upsert_geom_geojson(
+            layer_id=int(layer.id),
+            tenant_id=int(layer.tenant_id),
+            project_id=int(layer.project_id),
+            geom_geojson=geom_json,
         )
-        db.commit()
-        meta = layer_geom_meta(db, layer_ids=[layer.id]).get(layer.id) or {
+        meta = layers.geom_meta([layer.id]).get(layer.id) or {
             "mvt_ready": False,
             "bbox": None,
         }
@@ -138,7 +96,7 @@ class RenderLayerMvtTile:
 
     def execute(
         self,
-        db: Session,
+        layers: LayerRepository,
         *,
         layer: Layer,
         z: int,
@@ -152,15 +110,15 @@ class RenderLayerMvtTile:
         if x < 0 or y < 0 or x >= max_xy or y >= max_xy:
             raise ValueError("x/y fuera de rango para z")
 
-        ready = layer_geom_meta(db, layer_ids=[layer.id]).get(layer.id, {}).get("mvt_ready")
+        ready = layers.geom_meta([layer.id]).get(layer.id, {}).get("mvt_ready")
         if not ready and sync_if_missing:
-            SyncLayerGeom().execute(db, layer=layer)
-            ready = layer_geom_meta(db, layer_ids=[layer.id]).get(layer.id, {}).get("mvt_ready")
+            SyncLayerGeom().execute(layers, layer=layer)
+            ready = layers.geom_meta([layer.id]).get(layer.id, {}).get("mvt_ready")
         if not ready:
             raise LookupError("layer_geom_missing")
 
         return self._tiles.render_layer_mvt_tile(
-            db,
+            layers.persistence_handle(),
             layer_id=int(layer.id),
             tenant_id=int(layer.tenant_id),
             project_id=int(layer.project_id),

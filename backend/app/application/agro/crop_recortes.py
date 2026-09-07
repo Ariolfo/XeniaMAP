@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import rasterio
-from sqlalchemy.orm import Session
 
 from app.core.storage_paths import _tenant_storage
-from app.models.models import Layer
+from app.domain.agro.repositories import LayerRepository
 from app.core.celery_task_registry import register_celery_task
 from app.services.preprocess_pipeline_variant import normalize_pipeline_variant
 
@@ -42,7 +41,7 @@ def crop_output_path(tenant_id: int, project_id: int) -> Path:
 
 
 def _require_project_layer(
-    db: Session,
+    layers: LayerRepository,
     *,
     tenant_id: int,
     project_id: int,
@@ -50,14 +49,8 @@ def _require_project_layer(
 ) -> None:
     if layer_id is None:
         return
-    found = (
-        db.query(Layer)
-        .filter(
-            Layer.id == layer_id,
-            Layer.project_id == project_id,
-            Layer.tenant_id == tenant_id,
-        )
-        .first()
+    found = layers.get_by_id_for_project(
+        layer_id, project_id=project_id, tenant_id=tenant_id
     )
     if not found:
         raise LookupError(f"No existe la capa vectorial {layer_id} en este proyecto.")
@@ -69,7 +62,7 @@ class EnqueueS1GrdRecortes:
     def execute(
         self,
         *,
-        db: Session,
+        layers: LayerRepository,
         tenant_id: int,
         project_id: int,
         project_name: str,
@@ -80,7 +73,9 @@ class EnqueueS1GrdRecortes:
     ) -> dict[str, Any]:
         from app.tasks.jobs import s1_grd_recortes_pipeline
 
-        _require_project_layer(db, tenant_id=tenant_id, project_id=project_id, layer_id=layer_id)
+        _require_project_layer(
+            layers, tenant_id=tenant_id, project_id=project_id, layer_id=layer_id
+        )
 
         paths = [str(x).strip().replace("\\", "/") for x in (product_paths or []) if str(x).strip()]
         if not paths:
@@ -116,7 +111,7 @@ class EnqueueS2L2aRecortes:
     def execute(
         self,
         *,
-        db: Session,
+        layers: LayerRepository,
         tenant_id: int,
         project_id: int,
         project_name: str,
@@ -129,7 +124,9 @@ class EnqueueS2L2aRecortes:
     ) -> dict[str, Any]:
         from app.tasks.jobs import s2_l2a_recortes_pipeline
 
-        _require_project_layer(db, tenant_id=tenant_id, project_id=project_id, layer_id=layer_id)
+        _require_project_layer(
+            layers, tenant_id=tenant_id, project_id=project_id, layer_id=layer_id
+        )
 
         if not wkt:
             if layer_id is not None:

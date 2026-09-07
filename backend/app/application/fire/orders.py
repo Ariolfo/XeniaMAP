@@ -124,6 +124,13 @@ def projects_repo(db: Session) -> ProjectRepository:
     return SqlAlchemyProjectRepository(db)
 
 
+def unit_of_work_from_session(db: Session):
+    """UoW tipado (H6) — repos Fire/Agro sin Session en UC."""
+    from app.infrastructure.persistence.sqlalchemy_uow import unit_of_work
+
+    return unit_of_work(db)
+
+
 def celery_task_meta(task_id: str | None) -> dict[str, Any] | None:
     if not task_id:
         return None
@@ -148,7 +155,7 @@ class EnqueueFireDownloadS2:
         self,
         *,
         order: FireOrder,
-        db: Session,
+        fire_orders: FireOrderRepository,
         pre_start: str | None = None,
         pre_end: str | None = None,
         post_start: str | None = None,
@@ -182,7 +189,7 @@ class EnqueueFireDownloadS2:
         )
         order.download_message = "Encolando descarga Sentinel-2..."
         order.download_manifest = None
-        db.commit()
+        fire_orders.save(order)
 
         from app.tasks.fire_jobs import fire_download_s2
 
@@ -196,8 +203,7 @@ class EnqueueFireDownloadS2:
         )
         order.download_task_id = task_id
         order.download_message = f"Descarga iniciada (task {task_id})"
-        db.commit()
-        db.refresh(order)
+        fire_orders.save(order)
         return {"ok": True, "task_id": task_id, "order": order}
 
 
@@ -205,7 +211,7 @@ class EnqueueFireProcessDnbr:
     def __init__(self, jobs: JobQueuePort | None = None) -> None:
         self._jobs = jobs or default_job_queue()
 
-    def execute(self, *, order: FireOrder, db: Session) -> dict[str, Any]:
+    def execute(self, *, order: FireOrder, fire_orders: FireOrderRepository) -> dict[str, Any]:
         if not order.data_root:
             raise ValueError("Primero debe descargar Sentinel-2 (paso 01) para esta solicitud.")
         results_root = fire_results_root(order.id)
@@ -217,7 +223,7 @@ class EnqueueFireProcessDnbr:
         )
         order.process_message = "Encolando procesamiento dNBR..."
         order.process_manifest = None
-        db.commit()
+        fire_orders.save(order)
 
         from app.tasks.fire_jobs import fire_process_dnbr
 
@@ -231,8 +237,7 @@ class EnqueueFireProcessDnbr:
         )
         order.process_task_id = task_id
         order.process_message = f"Procesamiento dNBR iniciado (task {task_id})"
-        db.commit()
-        db.refresh(order)
+        fire_orders.save(order)
         return {"ok": True, "task_id": task_id, "order": order}
 
 
@@ -244,7 +249,7 @@ class EnqueueFireValidateFirms:
         self,
         *,
         order: FireOrder,
-        db: Session,
+        fire_orders: FireOrderRepository,
         fire_start: str | None = None,
         fire_end: str | None = None,
     ) -> dict[str, Any]:
@@ -262,7 +267,7 @@ class EnqueueFireValidateFirms:
         )
         order.firms_message = "Encolando validación FIRMS..."
         order.firms_manifest = None
-        db.commit()
+        fire_orders.save(order)
 
         from app.tasks.fire_jobs import fire_validate_firms
 
@@ -278,8 +283,7 @@ class EnqueueFireValidateFirms:
         )
         order.firms_task_id = task_id
         order.firms_message = f"Validación FIRMS iniciada (task {task_id})"
-        db.commit()
-        db.refresh(order)
+        fire_orders.save(order)
         return {
             "ok": True,
             "task_id": task_id,

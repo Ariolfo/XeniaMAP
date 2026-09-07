@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import rasterio
-from sqlalchemy.orm import Session
 
 from app.core.storage_paths import _tenant_storage
+from app.domain.agro.repositories import RasterLayerRepository
 from app.models.models import RasterLayer
 from app.services.preprocess_pipeline_variant import (
     is_planetscope_ps_recorte_filename,
@@ -35,7 +35,7 @@ class ListRecortesInventory:
 
     def execute(
         self,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         *,
         tenant_id: int,
         project_id: int,
@@ -50,11 +50,7 @@ class ListRecortesInventory:
         resolved_to_rid: dict[Path, int] = {}
         name_to_rid: dict[str, int] = {}
         source_basename_to_rid: dict[str, int] = {}
-        for r in (
-            db.query(RasterLayer)
-            .filter(RasterLayer.project_id == project_id, RasterLayer.tenant_id == tenant_id)
-            .all()
-        ):
+        for r in raster_layers.list_for_project(project_id=project_id, tenant_id=tenant_id):
             om = r.raster_metadata or {}
             sn = (om.get("source_name") or "").strip()
             if sn:
@@ -124,7 +120,7 @@ class PreviewRecortePng:
 
     def execute(
         self,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         *,
         tenant_id: int,
         project_id: int,
@@ -169,11 +165,7 @@ class PreviewRecortePng:
 
         meta: dict | None = None
         layer_match: RasterLayer | None = None
-        layers_q = (
-            db.query(RasterLayer)
-            .filter(RasterLayer.project_id == project_id, RasterLayer.tenant_id == tenant_id)
-            .all()
-        )
+        layers_q = raster_layers.list_for_project(project_id=project_id, tenant_id=tenant_id)
         try:
             tif_r = tif_path.resolve()
         except OSError:

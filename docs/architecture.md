@@ -172,7 +172,7 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 
 - CI: `.github/workflows/ci.yml` — ruff, pytest, eslint (núcleo mapa), vite build, docs-check.
 - Guía: [`ops/quality.md`](ops/quality.md).
-- Métricas: `GET /metrics` (HTTP + FIRMS cache + Celery enqueue) y worker `:9101` (duración/estado Celery); scrape en `infrastructure/prometheus.yml`.
+- Métricas: `GET /metrics` (HTTP + FIRMS cache + Celery enqueue) y workers `:9101` (agro) / `:9102` (fire); scrape en `infrastructure/prometheus.yml`.
 
 ## Roadmap de fases (audit F0–F7)
 
@@ -196,16 +196,22 @@ Permisos cliente (dashboard / admin browse): [`ops/permissions_cliente.md`](ops/
 | **H3** Puertos núcleo (Repo, Storage, JobQueue, Tiles) | **Hecho** |
 | **H4** Adelgazar pipelines/GIS | **Hecho** |
 | **H5** Hex total en monolito (+ API/worker images) | **Hecho** (piloto Session→repos; deps API/worker aún compartidas) |
-| B1 Extractable (contratos; solo con trigger) | Pendiente |
+| **B1** Extractable (contratos + colas agro/fire) | **Hecho** (extracción de proceso solo con trigger) |
+| **H6** Endurecimiento monolito (UoW/repos + slim deps) | **Hecho** (piloto; deuda fina post-H6 cerrada) |
 
-### Post-H5 residual (calidad / deuda)
+### Post-H6 (deuda fina cerrada 2026-09-07)
+
+1. Fire seed/project_link: UC + API vía UoW (`persistence_handle`); modules siguen Session por dentro
+2. `recortes_inventory` → `RasterLayerRepository.list_for_project`
+3. SoilPlus execute-save → Celery `tasks.soilplus_execute_save` (cola `agro`) + FE poll (`runSoilPlusExecuteSaveAndLoad`)
+
+### Calidad / extracción (no bloquea)
 
 1. `ruff format --check` en todo `app/`
-2. Subir umbral coverage `application/` (hoy ≥18%; meta 25%+) y cubrir inventarios S1/PS
-3. Bajar `max-warnings` ESLint hacia 0
-4. Dashboards Grafana (FIRMS hit-rate / Celery p95)
-5. Migrar UC residuales que aún reciben `Session` → `UnitOfWork` / repos (piloto Fire acceso ya en H5)
-6. Separar deps reales en `requirements-api.txt` vs `requirements-worker.txt` (hoy ambos `-r requirements.txt`)
+2. Coverage / ESLint warnings / Grafana
+3. Extracción BC solo con trigger (SNAP/GPU/CDSE)
+
+Contratos BC: [`ops/bounded_context_contracts.md`](ops/bounded_context_contracts.md) · Datos: [`ops/data_bounds.md`](ops/data_bounds.md).
 
 ### Vectores publicados (MVT)
 

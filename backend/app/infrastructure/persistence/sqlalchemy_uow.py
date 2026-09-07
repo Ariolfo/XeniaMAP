@@ -6,8 +6,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.infrastructure.persistence.sqlalchemy_layer_repository import (
+    SqlAlchemyLayerRepository,
+)
 from app.infrastructure.persistence.sqlalchemy_project_repository import (
     SqlAlchemyProjectRepository,
+)
+from app.infrastructure.persistence.sqlalchemy_raster_layer_repository import (
+    SqlAlchemyRasterLayerRepository,
 )
 from app.models.models import FireOrder
 
@@ -40,9 +46,19 @@ class SqlAlchemyUnitOfWork:
         self._db = db
         self.projects = SqlAlchemyProjectRepository(db)
         self.fire_orders = SqlAlchemyFireOrderRepository(db)
+        self.layers = SqlAlchemyLayerRepository(db)
+        self.raster_layers = SqlAlchemyRasterLayerRepository(db)
 
     def commit(self) -> None:
         self._db.commit()
 
     def rollback(self) -> None:
         self._db.rollback()
+
+    def persistence_handle(self) -> Any:
+        return self._db
+
+
+def unit_of_work(db: Session) -> SqlAlchemyUnitOfWork:
+    """Glue delivery→UoW (API/tasks)."""
+    return SqlAlchemyUnitOfWork(db)

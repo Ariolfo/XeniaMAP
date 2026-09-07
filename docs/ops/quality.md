@@ -62,7 +62,7 @@ npm run build
 | `xeniamap_celery_tasks_total` | Worker (signals Celery) | `task`, `state` |
 | `xeniamap_celery_task_duration_seconds` | Worker | `task` (histogram) |
 
-Worker: HTTP metrics en `:9101` (`CELERY_METRICS_PORT`). Rate de hit FIRMS:
+Worker Agro: HTTP metrics en `:9101` (`CELERY_METRICS_PORT`). Worker Fire: `:9102`. Rate de hit FIRMS:
 
 ```promql
 sum(rate(xeniamap_firms_live_cache_total{result="hit"}[5m]))
@@ -75,7 +75,8 @@ sum(rate(xeniamap_firms_live_cache_total{result=~"hit|miss"}[5m]))
 | Target | Path | Notas |
 |--------|------|--------|
 | backend:8000 | `/metrics` | HTTP + FIRMS cache + Celery enqueue |
-| worker:9101 | `/metrics` | duración / estado tareas Celery |
+| worker-agro:9101 | `/metrics` | duración / estado tareas cola `agro` |
+| worker-fire:9102 | `/metrics` | duración / estado tareas cola `fire` |
 | backend:8000 | `/health` | liveness (no Prometheus; probe k8s/compose) |
 
 ## Docs de arquitectura
@@ -92,6 +93,8 @@ Ops relacionados:
 - [`legacy_names.md`](legacy_names.md) — volumen Postgres legacy
 - [`permissions_cliente.md`](permissions_cliente.md) — matriz cliente/admin
 - [`hexagonal_modular_roadmap_checkpoint_2026-09-06.md`](hexagonal_modular_roadmap_checkpoint_2026-09-06.md) — fases H0→B1
+- [`bounded_context_contracts.md`](bounded_context_contracts.md) — colas agro/fire + contratos BC (B1)
+- [`data_bounds.md`](data_bounds.md) — tablas + EXTERNAL_DATA por contexto (B1)
 
 ## Ampliaciones futuras (fuera del gate actual)
 

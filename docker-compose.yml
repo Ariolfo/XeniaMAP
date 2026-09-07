@@ -63,9 +63,10 @@ services:
       - postgres
       - redis
 
-  # SNAP (subset S1): ver ``docker-compose.snap.yml`` y arranque con
-  #   docker compose -f docker-compose.yml -f docker-compose.snap.yml up -d worker
-  worker:
+  # B1: colas Celery separadas agro / fire (misma imagen; nombres tasks.fire_* estables).
+  # SNAP (subset S1): overlay en worker-agro —
+  #   docker compose -f docker-compose.yml -f docker-compose.snap.yml up -d worker-agro
+  worker-agro:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
@@ -85,7 +86,7 @@ services:
         "watchfiles",
         "--filter",
         "python",
-        "celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=2",
+        "celery -A app.tasks.celery_app.celery_app worker -Q agro --loglevel=info --concurrency=1 --max-tasks-per-child=2",
         ".",
       ]
     environment:
@@ -95,8 +96,43 @@ services:
       EXTERNAL_DATA_ROOT: /data_xeniamap
       MAX_UPLOAD_MB: "4096"
       CELERY_METRICS_PORT: "9101"
+      XENIAMAP_CELERY_QUEUES: agro
     ports:
       - "9101:9101"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - postgres
+
+  worker-fire:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    image: xeniamap-worker:local
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+      - ${EXTERNAL_DATA_HOST_PATH:-/mnt/disco3tb/Data_XeniaMap}:/data_xeniamap:rw
+    command:
+      [
+        "watchfiles",
+        "--filter",
+        "python",
+        "celery -A app.tasks.celery_app.celery_app worker -Q fire --loglevel=info --concurrency=1 --max-tasks-per-child=2",
+        ".",
+      ]
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_PATH: /data/storage
+      EXTERNAL_DATA_ROOT: /data_xeniamap
+      MAX_UPLOAD_MB: "4096"
+      CELERY_METRICS_PORT: "9102"
+      XENIAMAP_CELERY_QUEUES: fire
+    ports:
+      - "9102:9102"
     env_file:
       - .env
     depends_on:

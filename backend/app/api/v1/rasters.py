@@ -20,6 +20,7 @@ from app.services.raster_geo import (
     render_s1_vh_vv_ratio_preview_png,
 )
 from app.services.preprocess_pipeline_variant import is_planetscope_ps_recorte_filename
+from app.application.agro.repos import raster_layers_repo
 from app.application.agro.rasters import (
     delete_raster_layer_row,
     upload_raster as upload_raster_uc,
@@ -159,7 +160,7 @@ def delete_raster(
     )
     if not raster:
         raise HTTPException(status_code=404, detail="Raster layer not found")
-    delete_raster_layer_row(db, tenant_id, project_id, raster)
+    delete_raster_layer_row(raster_layers_repo(db), tenant_id, project_id, raster)
     db.commit()
     return {"status": "ok", "deleted_raster_id": raster_id}
 
@@ -201,7 +202,7 @@ def purge_s2_l2a_recortes_by_sort_keys(
         rid = r.id
         scene_hit = _scene_iso_yyyy_mm_dd_for_purge(r)
         nm = r.name
-        delete_raster_layer_row(db, tenant_id, project_id, r)
+        delete_raster_layer_row(raster_layers_repo(db), tenant_id, project_id, r)
         deleted_ids.append(rid)
         deleted_detail.append({"raster_layer_id": rid, "scene_iso": scene_hit, "name": nm})
     db.commit()

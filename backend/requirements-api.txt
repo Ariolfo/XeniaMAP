@@ -1,3 +1,3 @@
-# API HTTP image (H5). Same Python deps as full stack today (preview/MVT/SoilPlus sync).
-# Heavy / native GIS extras (SNAP, GDAL build-time) MUST go in requirements-worker.txt only.
--r requirements.txt
+# API HTTP image (H6 slim): shared stack sin boto3 (solo worker Fire S3).
+# GIS request-path (rasterio/geopandas/sklearn) sigue en API hasta sacar SoilPlus/preview sync.
+-r requirements-common.txt

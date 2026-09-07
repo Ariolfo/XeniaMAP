@@ -7,6 +7,7 @@ import DemRoiEditor, { defaultRoi, soilRoiToQueryParam } from "./DemRoiEditor";
 import VegetationTimeSeriesCharts from "../VegetationTimeSeriesCharts";
 import ClimateTimeSeriesChart, { CLIMATE_SERIES_COLORS } from "./ClimateTimeSeriesChart";
 import DashboardIaAnalysisModal, { DigitalBrainIcon } from "./DashboardIaAnalysisModal";
+import { runSoilPlusExecuteSaveAndLoad } from "../../features/agro/runSoilPlusExecuteSave";
 
 const SENSOR_META = {
   s1: { title: "Sentinel-1", variant: "s1", defaultIndex: "RVI" },
@@ -887,11 +888,10 @@ export default function AdvancedDashboard({
         m: 2.0,
       };
       if (roiQ) params.roi_polygon = roiQ;
-      const { data } = await api.post(`/preprocess/soilplus-execute-save/${projectId}`, null, {
+      const { data, variant: vk } = await runSoilPlusExecuteSaveAndLoad({
+        projectId,
         params,
       });
-
-      const vk = eng === "matlab" ? "matlab" : "fast";
       const kinds = ["dem", "cv", "fcm", "aspect", "slope"];
       const imgEntries = await Promise.all(
         kinds.map(async (kind) => [kind, await fetchPreviewObjectUrl(`${base}/preprocess/soilplus-saved-img/${projectId}?variant=${vk}&kind=${kind}`, effectiveToken)])

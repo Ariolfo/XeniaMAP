@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.storage_paths import _tenant_storage
+from app.domain.agro.repositories import RasterLayerRepository
+from app.domain.shared.ports import ProjectRepository
+from app.infrastructure.persistence.sqlalchemy_project_repository import (
+    SqlAlchemyProjectRepository,
+)
 from app.models.models import Project, RasterLayer
 from app.services.raster_geo import bounds_wgs84_from_path
 from app.services.s2_composites import (
@@ -211,7 +216,7 @@ def _raster_chronological_sort_key(raster: RasterLayer) -> str:
 
 
 def _remove_extract_dir_if_no_other_layers(
-    db: Session, project_id: int, tenant_id: int, raster: RasterLayer
+    raster_layers: RasterLayerRepository, project_id: int, tenant_id: int, raster: RasterLayer
 ) -> None:
     """Elimina la carpeta descomprimida solo cuando no queda ninguna capa que la use."""
     meta = raster.raster_metadata or {}
@@ -219,14 +224,8 @@ def _remove_extract_dir_if_no_other_layers(
     if not ex:
         return
     rid = raster.id
-    for other in (
-        db.query(RasterLayer)
-        .filter(
-            RasterLayer.project_id == project_id,
-            RasterLayer.tenant_id == tenant_id,
-            RasterLayer.id != rid,
-        )
-        .all()
+    for other in raster_layers.list_for_project_excluding(
+        project_id=project_id, tenant_id=tenant_id, exclude_id=rid
     ):
         if (other.raster_metadata or {}).get("extract_dir") == ex:
             return
@@ -239,9 +238,14 @@ def _remove_extract_dir_if_no_other_layers(
         pass
 
 
-def delete_raster_layer_row(db: Session, tenant_id: int, project_id: int, raster: RasterLayer) -> None:
+def delete_raster_layer_row(
+    raster_layers: RasterLayerRepository,
+    tenant_id: int,
+    project_id: int,
+    raster: RasterLayer,
+) -> None:
     """Elimina archivos en disco vinculados a la capa y la fila ``raster_layers``. No hace ``commit``."""
-    _remove_extract_dir_if_no_other_layers(db, project_id, tenant_id, raster)
+    _remove_extract_dir_if_no_other_layers(raster_layers, project_id, tenant_id, raster)
     stack_p = (raster.raster_metadata or {}).get("s2_stack_path")
     rid = raster.id
     for p in [raster.cog_path, raster.file_path]:
@@ -250,21 +254,15 @@ def delete_raster_layer_row(db: Session, tenant_id: int, project_id: int, raster
             if fp.exists():
                 fp.unlink(missing_ok=True)
     if stack_p:
-        others = (
-            db.query(RasterLayer)
-            .filter(
-                RasterLayer.project_id == project_id,
-                RasterLayer.tenant_id == tenant_id,
-                RasterLayer.id != rid,
-            )
-            .all()
+        others = raster_layers.list_for_project_excluding(
+            project_id=project_id, tenant_id=tenant_id, exclude_id=rid
         )
         if not any((o.raster_metadata or {}).get("s2_stack_path") == stack_p for o in others):
             sp = Path(stack_p).resolve()
             root = Path(settings.storage_path).resolve()
             if str(sp).startswith(str(root)) and sp.is_file():
                 sp.unlink(missing_ok=True)
-    db.delete(raster)
+    raster_layers.delete(raster)
 
 
 def _normalize_s2_sort_keys(raw: list[str]) -> list[str]:
@@ -347,6 +345,8 @@ def upload_raster(
     project_id: int,
     filename: str | None,
     file_obj: BinaryIO,
+    projects: ProjectRepository | None = None,
+    raster_layers: RasterLayerRepository | None = None,
 ) -> dict:
     """
     Sube un GeoTIFF/imagen o un ZIP Sentinel-2 (.SAFE con bandas 10 m).
@@ -356,11 +356,12 @@ def upload_raster(
         LookupError: proyecto no encontrado
         ValueError: formato no soportado o ZIP inválido / bandas faltantes
     """
-    project = (
-        db.query(Project)
-        .filter(Project.id == project_id, Project.tenant_id == tenant_id)
-        .first()
-    )
+    from app.application.agro.repos import raster_layers_repo
+
+    projects = projects or SqlAlchemyProjectRepository(db)
+    raster_layers = raster_layers or raster_layers_repo(db)
+
+    project = projects.get_by_id(project_id, tenant_id=tenant_id)
     if not project:
         raise LookupError("Project not found")
 
@@ -379,6 +380,7 @@ def upload_raster(
             source_name=source_name,
             file_obj=file_obj,
             out_dir=out_dir,
+            raster_layers=raster_layers,
         )
 
     destination = out_dir / f"{uuid.uuid4().hex}{ext}"
@@ -398,9 +400,7 @@ def upload_raster(
         cog_path=str(cog_path),
         raster_metadata=meta,
     )
-    db.add(raster)
-    db.commit()
-    db.refresh(raster)
+    raster_layers.save(raster)
     process_raster.delay(str(destination), str(cog_path), raster.id)
     return {"raster_layer_id": raster.id, "metadata": raster.raster_metadata}
 
@@ -413,7 +413,11 @@ def _upload_s2_zip(
     source_name: str,
     file_obj: BinaryIO,
     out_dir: Path,
+    raster_layers: RasterLayerRepository | None = None,
 ) -> dict:
+    from app.application.agro.repos import raster_layers_repo
+
+    raster_layers = raster_layers or raster_layers_repo(db)
     pack_id = uuid.uuid4().hex
     zip_path = out_dir / f"{pack_id}.zip"
     with zip_path.open("wb") as buffer:
@@ -498,11 +502,8 @@ def _upload_s2_zip(
         cog_path=str(nir_cog),
         raster_metadata=meta_nir,
     )
-    db.add(raster_rgb)
-    db.add(raster_nir)
-    db.commit()
-    db.refresh(raster_rgb)
-    db.refresh(raster_nir)
+    raster_layers.save(raster_rgb)
+    raster_layers.save(raster_nir)
 
     band_paths = {k: str(v) for k, v in band_files.items()}
     process_s2_zip_layers.delay(

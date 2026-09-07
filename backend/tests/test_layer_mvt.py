@@ -80,11 +80,11 @@ def test_sync_layer_geom_no_file(tmp_path: Path):
     layer.tenant_id = 1
     layer.project_id = 2
     layer.file_path = str(tmp_path / "missing.geojson")
-    db = MagicMock()
-    out = SyncLayerGeom().execute(db, layer=layer)
+    layers = MagicMock()
+    out = SyncLayerGeom().execute(layers, layer=layer)
     assert out["ok"] is False
     assert out["mvt_ready"] is False
-    db.execute.assert_not_called()
+    layers.upsert_geom_geojson.assert_not_called()
 
 
 def test_sync_layer_geom_writes_postgis(tmp_path: Path):
@@ -110,52 +110,50 @@ def test_sync_layer_geom_writes_postgis(tmp_path: Path):
     layer.tenant_id = 1
     layer.project_id = 2
     layer.file_path = str(path)
-    db = MagicMock()
-    with patch(
-        "app.application.agro.layer_mvt.layer_geom_meta",
-        return_value={9: {"mvt_ready": True, "bbox": [-74.1, 4.5, -74.0, 4.6]}},
-    ):
-        out = SyncLayerGeom().execute(db, layer=layer)
+    layers = MagicMock()
+    layers.geom_meta.return_value = {9: {"mvt_ready": True, "bbox": [-74.1, 4.5, -74.0, 4.6]}}
+    out = SyncLayerGeom().execute(layers, layer=layer)
     assert out["ok"] is True
     assert out["mvt_ready"] is True
     assert out["bbox"] == [-74.1, 4.5, -74.0, 4.6]
-    db.execute.assert_called_once()
-    db.commit.assert_called_once()
+    layers.upsert_geom_geojson.assert_called_once()
 
 
 def test_render_mvt_rejects_bad_tile():
-    db = MagicMock()
+    layers = MagicMock()
     layer = MagicMock(id=1, tenant_id=1, project_id=1)
     with pytest.raises(ValueError, match="z fuera"):
-        RenderLayerMvtTile().execute(db, layer=layer, z=99, x=0, y=0)
+        RenderLayerMvtTile().execute(layers, layer=layer, z=99, x=0, y=0)
 
 
 def test_render_mvt_missing_geom():
-    db = MagicMock()
+    layers = MagicMock()
+    layers.geom_meta.return_value = {1: {"mvt_ready": False}}
     layer = MagicMock(id=1, tenant_id=1, project_id=1, file_path="/nope.geojson")
-    with patch("app.application.agro.layer_mvt.layer_geom_meta", return_value={1: {"mvt_ready": False}}):
-        with patch.object(SyncLayerGeom, "execute", return_value={"ok": False, "mvt_ready": False}):
-            with pytest.raises(LookupError, match="layer_geom_missing"):
-                RenderLayerMvtTile().execute(db, layer=layer, z=5, x=10, y=12)
+    with patch.object(SyncLayerGeom, "execute", return_value={"ok": False, "mvt_ready": False}):
+        with pytest.raises(LookupError, match="layer_geom_missing"):
+            RenderLayerMvtTile().execute(layers, layer=layer, z=5, x=10, y=12)
 
 
 def test_render_mvt_returns_bytes():
-    db = MagicMock()
+    layers = MagicMock()
+    layers.geom_meta.return_value = {1: {"mvt_ready": True, "bbox": [-74, 4, -73, 5]}}
+    layers.persistence_handle.return_value = object()
     layer = MagicMock(id=1, tenant_id=1, project_id=1)
-    db.execute.return_value.first.return_value = (b"\x1a\x00",)
-    with patch(
-        "app.application.agro.layer_mvt.layer_geom_meta",
-        return_value={1: {"mvt_ready": True, "bbox": [-74, 4, -73, 5]}},
-    ):
-        out = RenderLayerMvtTile().execute(db, layer=layer, z=5, x=10, y=12, sync_if_missing=False)
+    tiles = MagicMock()
+    tiles.render_layer_mvt_tile.return_value = b"\x1a\x00"
+    out = RenderLayerMvtTile(tiles=tiles).execute(
+        layers, layer=layer, z=5, x=10, y=12, sync_if_missing=False
+    )
     assert out == b"\x1a\x00"
     assert MVT_SOURCE_LAYER == "published"
 
 
 def test_layer_geom_meta_empty():
-    db = MagicMock()
-    assert layer_geom_meta(db, layer_ids=[]) == {}
-    db.execute.assert_not_called()
+    layers = MagicMock()
+    layers.geom_meta.return_value = {}
+    assert layer_geom_meta(layers, layer_ids=[]) == {}
+    layers.geom_meta.assert_called_once_with([])
 
 
 def test_postgis_st_asmvt_roundtrip():
@@ -219,12 +217,17 @@ def test_postgis_st_asmvt_roundtrip():
         )
         db.commit()
 
-        meta = layer_geom_meta(db, layer_ids=[layer.id])
+        from app.infrastructure.persistence.sqlalchemy_layer_repository import (
+            SqlAlchemyLayerRepository,
+        )
+
+        layers = SqlAlchemyLayerRepository(db)
+        meta = layer_geom_meta(layers, layer_ids=[layer.id])
         assert meta[layer.id]["mvt_ready"] is True
         assert meta[layer.id]["bbox"] is not None
 
         tile = RenderLayerMvtTile().execute(
-            db, layer=layer, z=0, x=0, y=0, sync_if_missing=False
+            layers, layer=layer, z=0, x=0, y=0, sync_if_missing=False
         )
         assert isinstance(tile, bytes)
         assert len(tile) > 0

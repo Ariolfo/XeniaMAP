@@ -55,7 +55,7 @@ def test_preview_recorte_requires_path_or_name():
         root.resolve.return_value = root
         storage.return_value = root
         with pytest.raises(ValueError, match="Indica path o name"):
-            PreviewRecortePng().execute(db, tenant_id=1, project_id=1)
+            PreviewRecortePng().execute(MagicMock(), tenant_id=1, project_id=1)
 
 
 def test_preview_recorte_rejects_path_traversal():
@@ -66,7 +66,7 @@ def test_preview_recorte_rejects_path_traversal():
         storage.return_value = root
         with pytest.raises(ValueError, match="Ruta relativa no válida"):
             PreviewRecortePng().execute(
-                db,
+                MagicMock(),
                 tenant_id=1,
                 project_id=1,
                 recorte_relpath="../secret.tif",

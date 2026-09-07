@@ -1,4 +1,4 @@
-# Imagen worker Celery (H5) — pipelines Fire/Agro. Deps: requirements-worker.txt.
+# Imagen worker Celery (H5/H6) — pipelines Fire/Agro. Deps: requirements-worker.txt (+ boto3).
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,11 +13,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-worker.txt ./
+COPY requirements-common.txt requirements-worker.txt ./
 RUN pip install -r requirements-worker.txt
 
 COPY . .
 
 EXPOSE 9101
 
-CMD ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
+CMD ["celery", "-A", "app.tasks.celery_app.celery_app", "worker", "-Q", "agro", "--loglevel=info", "--concurrency=1"]

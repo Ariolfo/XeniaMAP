@@ -1129,3 +1129,41 @@ def landing_markdown_pipeline(project_id: int) -> dict:
     from app.application.agro.run_landing_markdown import RunLandingMarkdownJob
 
     return RunLandingMarkdownJob().execute(project_id=project_id)
+
+
+@celery_app.task(name="tasks.soilplus_execute_save", bind=True)
+def soilplus_execute_save(
+    self,
+    project_id: int,
+    tenant_id: int,
+    window_size: int,
+    cv_engine: str,
+    n_clusters: int,
+    fishnet_step: int,
+    roi_polygon: str | None,
+    total_samples: int | None,
+    cmap: str,
+    m: float,
+) -> dict:
+    """SoilPlus execute-save en worker agro (libera el request HTTP de la API)."""
+    from app.application.agro.soilplus import execute_save_bundle
+    from app.services.soilplus import _soilplus_saved_variant_slug
+
+    execute_save_bundle(
+        int(project_id),
+        int(tenant_id),
+        window_size=int(window_size),
+        cv_engine=str(cv_engine),
+        n_clusters=int(n_clusters),
+        fishnet_step=int(fishnet_step),
+        roi_polygon=roi_polygon,
+        total_samples=total_samples,
+        cmap=str(cmap),
+        m=float(m),
+    )
+    return {
+        "ok": True,
+        "project_id": int(project_id),
+        "variant": _soilplus_saved_variant_slug(cv_engine),
+        "cv_engine": str(cv_engine),
+    }

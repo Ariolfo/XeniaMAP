@@ -1,4 +1,4 @@
-# Imagen API (H5) — uvicorn / FastAPI. Deps: requirements-api.txt.
+# Imagen API (H5/H6) — uvicorn / FastAPI. Deps: requirements-api.txt (− boto3).
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,7 +13,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY requirements.txt requirements-api.txt ./
+COPY requirements-common.txt requirements-api.txt ./
 RUN pip install -r requirements-api.txt
 
 COPY . .

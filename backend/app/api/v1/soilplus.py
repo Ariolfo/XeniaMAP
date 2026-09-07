@@ -8,12 +8,19 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_project_dashboard_access, tenant_from_jwt
-from app.application.agro import soilplus as sp
 from app.db.session import get_db
 from app.models.models import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _sp():
+    """Lazy: evita cargar rasterio/sklearn al importar el router API."""
+    from app.application.agro import soilplus as soilplus_mod
+
+    return soilplus_mod
+
 
 
 def _map_app_exc(exc: Exception) -> HTTPException:
@@ -42,7 +49,7 @@ def dashboard_ia_planet_integral(
     max_scenes: int = Query(36, ge=4, le=60),
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    return sp.build_dashboard_ia_planet_integral(
+    return _sp().build_dashboard_ia_planet_integral(
         project_id=project_id, tenant_id=tenant_id, max_scenes=max_scenes
     )
 
@@ -55,7 +62,7 @@ def get_ps_soilplus_f1_exact(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    return _call(sp.compute_ps_soilplus_f1_exact, project_id=project_id, tenant_id=tenant_id)
+    return _call(_sp().compute_ps_soilplus_f1_exact, project_id=project_id, tenant_id=tenant_id)
 
 
 @router.get("/preprocess/soilplus-dem-input/{project_id}")
@@ -70,7 +77,7 @@ def get_soilplus_dem_input_stats(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     return _call(
-        sp.dem_input_stats,
+        _sp().dem_input_stats,
         project_id=project_id,
         tenant_id=tenant_id,
         window_size=window_size,
@@ -89,7 +96,7 @@ def get_soilplus_f123_terrain(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     return _call(
-        sp.f123_terrain, project_id=project_id, tenant_id=tenant_id, roi_polygon=roi_polygon
+        _sp().f123_terrain, project_id=project_id, tenant_id=tenant_id, roi_polygon=roi_polygon
     )
 
 
@@ -108,7 +115,7 @@ def get_soilplus_sampling_plan(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     return _call(
-        sp.sampling_plan,
+        _sp().sampling_plan,
         project_id=project_id,
         tenant_id=tenant_id,
         window_size=window_size,
@@ -135,25 +142,33 @@ def post_soilplus_execute_save(
     user: User = Depends(get_current_user),
     tenant_id: int = Depends(tenant_from_jwt),
 ):
+    """Encola SoilPlus execute-save en cola ``agro``. Poll ``/preprocess/task-status/{task_id}``
+    y luego ``GET .../soilplus-saved-json``."""
     require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.infrastructure.composition import default_job_queue
+    from app.tasks.jobs import soilplus_execute_save
+
+    eng = "matlab" if str(cv_engine).lower().strip() == "matlab" else "fast"
     try:
-        return sp.execute_save_bundle(
-            project_id,
-            tenant_id,
-            window_size=window_size,
-            cv_engine=cv_engine,
-            n_clusters=n_clusters,
-            fishnet_step=fishnet_step,
-            roi_polygon=roi_polygon,
-            total_samples=total_samples,
-            cmap=cmap,
-            m=m,
+        task_id = default_job_queue().enqueue(
+            soilplus_execute_save,
+            int(project_id),
+            int(tenant_id),
+            int(window_size),
+            eng,
+            int(n_clusters),
+            int(fishnet_step),
+            roi_polygon,
+            total_samples,
+            str(cmap),
+            float(m),
+            tenant_id=int(tenant_id),
+            project_id=int(project_id),
+            task_name="soilplus_execute_save",
         )
-    except (LookupError, ValueError, RuntimeError) as exc:
-        raise _map_app_exc(exc) from exc
-    except Exception as exc:
-        logger.exception("soilplus execute-save")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "queued", "task_id": task_id, "cv_engine": eng}
 
 
 @router.get("/preprocess/soilplus-saved-summary/{project_id}")
@@ -164,7 +179,7 @@ def get_soilplus_saved_summary(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    return sp.saved_summary(project_id=project_id, tenant_id=tenant_id)
+    return _sp().saved_summary(project_id=project_id, tenant_id=tenant_id)
 
 
 @router.get("/preprocess/soilplus-saved-json/{project_id}")
@@ -176,7 +191,7 @@ def get_soilplus_saved_json(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    return _call(sp.saved_json, project_id=project_id, tenant_id=tenant_id, variant=variant)
+    return _call(_sp().saved_json, project_id=project_id, tenant_id=tenant_id, variant=variant)
 
 
 @router.get("/preprocess/soilplus-saved-img/{project_id}")
@@ -190,7 +205,7 @@ def get_soilplus_saved_img(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     path = _call(
-        sp.saved_img_path,
+        _sp().saved_img_path,
         project_id=project_id,
         tenant_id=tenant_id,
         variant=variant,
@@ -209,7 +224,7 @@ def get_soilplus_landing_mosaic(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
-        png = sp.build_landing_mosaic(project_id, tenant_id, variant=variant)
+        png = _sp().build_landing_mosaic(project_id, tenant_id, variant=variant)
     except (LookupError, ValueError, RuntimeError) as exc:
         raise _map_app_exc(exc) from exc
     except Exception as exc:
@@ -230,7 +245,7 @@ def get_soilplus_dem_preview(
     tenant_id: int = Depends(tenant_from_jwt),
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
-    png = _call(sp.dem_preview_png, project_id=project_id, tenant_id=tenant_id)
+    png = _call(_sp().dem_preview_png, project_id=project_id, tenant_id=tenant_id)
     return Response(content=png, media_type="image/png")
 
 
@@ -247,7 +262,7 @@ def get_soilplus_cv_preview(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     png = _call(
-        sp.cv_preview_png,
+        _sp().cv_preview_png,
         project_id=project_id,
         tenant_id=tenant_id,
         window_size=window_size,
@@ -268,7 +283,7 @@ def get_soilplus_aspect_preview(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     png = _call(
-        sp.aspect_preview_png,
+        _sp().aspect_preview_png,
         project_id=project_id,
         tenant_id=tenant_id,
         roi_polygon=roi_polygon,
@@ -286,7 +301,7 @@ def get_soilplus_slope_preview(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     png = _call(
-        sp.slope_preview_png,
+        _sp().slope_preview_png,
         project_id=project_id,
         tenant_id=tenant_id,
         roi_polygon=roi_polygon,
@@ -309,7 +324,7 @@ def get_soilplus_q_curve(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     return _call(
-        sp.q_curve,
+        _sp().q_curve,
         project_id=project_id,
         tenant_id=tenant_id,
         window_size=window_size,
@@ -335,7 +350,7 @@ def get_soilplus_fcm_cv_preview(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     png = _call(
-        sp.fcm_cv_preview_png,
+        _sp().fcm_cv_preview_png,
         project_id=project_id,
         tenant_id=tenant_id,
         window_size=window_size,
@@ -359,7 +374,7 @@ def get_soilplus_elbow(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     return _call(
-        sp.elbow_curve,
+        _sp().elbow_curve,
         project_id=project_id,
         tenant_id=tenant_id,
         k_min=k_min,
@@ -379,7 +394,7 @@ def get_soilplus_cluster_preview(
 ):
     require_project_dashboard_access(db, user, tenant_id, project_id)
     png = _call(
-        sp.kmeans_cluster_preview_png,
+        _sp().kmeans_cluster_preview_png,
         project_id=project_id,
         tenant_id=tenant_id,
         n_clusters=n_clusters,

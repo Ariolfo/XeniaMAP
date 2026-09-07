@@ -13,6 +13,7 @@ from app.api.deps import get_current_user, require_admin
 from app.application.fire.catalog import FIRE_RESULT_CATALOG  # noqa: F401 — re-export tests
 from app.application.fire.firms_live import GetFirmsLiveHotspots
 from app.application.fire.orders import (
+    unit_of_work_from_session,
     EnqueueFireDownloadS2,
     EnqueueFireProcessDnbr,
     EnqueueFireValidateFirms,
@@ -133,14 +134,15 @@ def seed_tolima(
 ):
     """Precarga solicitudes desde Incendios_Tolima.shp."""
     try:
+        uow = unit_of_work_from_session(db)
         result = SeedTolimaFireOrders().execute(
-            db,
+            uow,
             admin,
             applicant_email=(applicant_email or "").strip() or None,
         )
         if applicant_email:
             linked = MaterializeFireProjectsForApplicant().execute(
-                db, applicant_email=applicant_email.strip()
+                uow, applicant_email=applicant_email.strip()
             )
             result["projects"] = linked
     except ValueError as exc:
@@ -159,7 +161,7 @@ def materialize_projects(
 ):
     try:
         return MaterializeFireProjectsForApplicant().execute(
-            db, applicant_email=applicant_email
+            unit_of_work_from_session(db), applicant_email=applicant_email
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -228,7 +230,7 @@ def create_fire_order(
     db.add(order)
     db.flush()
     if applicant is not None:
-        EnsureFireOrderProject().execute(db, order, applicant)
+        EnsureFireOrderProject().execute(unit_of_work_from_session(db), order, applicant)
     db.commit()
     db.refresh(order)
     return _detail(order, db)
@@ -261,8 +263,7 @@ def patch_fire_order(
         order.status = assert_fire_order_transition(order.status, payload.status, mode="admin")
     except InvalidStatusError as exc:
         raise HTTPException(status_code=400, detail=exc.message) from exc
-    db.commit()
-    db.refresh(order)
+    fire_orders_repo(db).save(order)
     return _detail(order, db)
 
 
@@ -278,7 +279,7 @@ def start_fire_download(
         body = payload or FireOrderDownloadRequest()
         out = EnqueueFireDownloadS2().execute(
             order=order,
-            db=db,
+            fire_orders=fire_orders_repo(db),
             pre_start=body.pre_start,
             pre_end=body.pre_end,
             post_start=body.post_start,
@@ -311,7 +312,9 @@ def start_fire_process_dnbr(
 ):
     try:
         order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
-        out = EnqueueFireProcessDnbr().execute(order=order, db=db)
+        out = EnqueueFireProcessDnbr().execute(
+            order=order, fire_orders=fire_orders_repo(db)
+        )
     except (LookupError, ValueError) as exc:
         raise _http_from_app(exc) from exc
     return {"ok": True, "task_id": out["task_id"], "order": _detail(out["order"], db)}
@@ -328,7 +331,10 @@ def start_fire_validate_firms(
         order = require_fire_order_admin(order_id, admin, fire_orders=fire_orders_repo(db))
         body = payload or FireOrderFirmsRequest()
         out = EnqueueFireValidateFirms().execute(
-            order=order, db=db, fire_start=body.fire_start, fire_end=body.fire_end
+            order=order,
+            fire_orders=fire_orders_repo(db),
+            fire_start=body.fire_start,
+            fire_end=body.fire_end,
         )
     except (LookupError, ValueError) as exc:
         raise _http_from_app(exc) from exc

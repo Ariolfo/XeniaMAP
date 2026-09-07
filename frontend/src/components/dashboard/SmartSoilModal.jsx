@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import api, { API_URL, formatApiErrorDetail, loadStoredAuth, setAuthToken } from "../../api";
 import DemRoiEditor, { defaultRoi, soilRoiToQueryParam } from "./DemRoiEditor";
+import { runSoilPlusExecuteSaveAndLoad } from "../../features/agro/runSoilPlusExecuteSave";
 
 async function fetchPreviewObjectUrl(fullUrl, token) {
   const url = String(fullUrl || "").trim();
@@ -276,8 +277,10 @@ export default function SmartSoilModal({ open, onClose, token, projectId, projec
         m: 2.0,
       };
       if (roiQ) params.roi_polygon = roiQ;
-      const { data } = await api.post(`/preprocess/soilplus-execute-save/${projectId}`, null, { params });
-      const vk = eng === "matlab" ? "matlab" : "fast";
+      const { data, variant: vk } = await runSoilPlusExecuteSaveAndLoad({
+        projectId,
+        params,
+      });
       const kinds = ["dem", "cv", "fcm", "aspect", "slope"];
       const imgEntries = await Promise.all(
         kinds.map(async (kind) => [kind, await fetchPreviewObjectUrl(`${base}/preprocess/soilplus-saved-img/${projectId}?variant=${vk}&kind=${kind}`, effectiveToken)])

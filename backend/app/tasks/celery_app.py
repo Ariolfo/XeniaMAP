@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 celery_app = Celery("xeniamap", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.task_track_started = True
 
+# B1: colas por bounded context (nombres de tarea Celery sin cambio).
+from kombu import Queue  # noqa: E402
+
+from app.tasks.queue_routing import QUEUE_AGRO, QUEUE_FIRE, celery_task_routes  # noqa: E402
+
+celery_app.conf.task_default_queue = QUEUE_AGRO
+celery_app.conf.task_queues = (
+    Queue(QUEUE_AGRO),
+    Queue(QUEUE_FIRE),
+)
+celery_app.conf.task_routes = celery_task_routes()
+
 # Import task modules so the worker registers all @celery_app.task definitions.
 # Without this, `celery -A app.tasks.celery_app.celery_app worker` only loads this file
 # and tasks in jobs.py never get registered (KeyError: 'tasks.download_sentinel2').

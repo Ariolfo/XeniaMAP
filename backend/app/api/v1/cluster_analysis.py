@@ -8,8 +8,6 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-from rasterio.enums import Resampling
-from rasterio.warp import reproject
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -18,7 +16,6 @@ from app.api.v1.helpers import _tenant_storage, project_s1_preproceso_dir
 from app.db.session import get_db
 from app.models.models import Project, User
 from app.schemas.schemas import ClusterElbowRequest, ClusterGmmRequest
-from app.services import satellite_clustering as sc
 from app.services.preprocess_pipeline_variant import (
     cluster_output_dir_name,
     indices_dir_name,
@@ -31,6 +28,20 @@ from app.services.s1_sar_indices import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sc():
+    from app.services import satellite_clustering as satellite_clustering_mod
+
+    return satellite_clustering_mod
+
+
+def _rio_reproject():
+    from rasterio.enums import Resampling
+    from rasterio.warp import reproject
+
+    return Resampling, reproject
+
 
 router = APIRouter()
 
@@ -56,7 +67,7 @@ def _discover_optical_index_datasets_only(
     No incluir recortes multibanda (imágenes L2A / Planet).
     """
     indices = _tenant_storage(tenant_id, project_id, indices_dir_name(pipeline_variant))
-    return sc.discover_index_cluster_datasets(indices)
+    return _sc().discover_index_cluster_datasets(indices)
 
 
 def _optical_index_empty_detail(pipeline_variant: str) -> str:
@@ -82,6 +93,7 @@ def _resample_to_ref_grid(
     ref_profile: dict,
 ) -> np.ndarray:
     """Reproyecta una banda float32 al grid de referencia con vecino más cercano."""
+    Resampling, reproject = _rio_reproject()
     out = np.empty((int(ref_profile["height"]), int(ref_profile["width"])), dtype=np.float32)
     out.fill(np.nan)
     reproject(
@@ -184,7 +196,7 @@ def _assemble_s1_cluster_datasets(
     Salida esperada: hasta 7 GeoTIFF en ``cluster_s1_gmm/`` (p. ej. ``RVI_gmm_k4.tif``, ``VV_gmm_k4.tif``).
     """
     s1indices = _tenant_storage(tenant_id, project_id, "s1indices")
-    datasets = sc.discover_s1_cluster_datasets(s1indices)
+    datasets = _sc().discover_s1_cluster_datasets(s1indices)
     if not datasets:
         raise HTTPException(
             status_code=400,
@@ -264,7 +276,7 @@ def list_cluster_datasets(
     if pipeline_variant == "s1":
         # Listado informativo: índices + VV/VH con todas las fechas disponibles (sin filtrar).
         s1indices = _tenant_storage(tenant_id, project_id, "s1indices")
-        datasets = sc.discover_s1_cluster_datasets(s1indices)
+        datasets = _sc().discover_s1_cluster_datasets(s1indices)
         datasets.extend(_build_s1_virtual_sigma_stacks(tenant_id, project_id, selected_dates=None))
     else:
         datasets = _discover_optical_index_datasets_only(tenant_id, project_id, pipeline_variant)
@@ -286,7 +298,7 @@ def get_cluster_gmm_results(
     """
     _project_or_404(db, user, project_id, tenant_id)
     out_dir = _tenant_storage(tenant_id, project_id, _cluster_out_dir_name(pipeline_variant))
-    results = sc.load_cluster_gmm_results_from_storage(out_dir)
+    results = _sc().load_cluster_gmm_results_from_storage(out_dir)
     return {
         "project_id": project_id,
         "output_dir": str(Path(out_dir).resolve()),
@@ -333,8 +345,8 @@ def cluster_elbow(
     for ds in datasets:
         path = Path(ds["path"])
         try:
-            band_indexes = sc.band_indexes_from_dates(path, payload.selected_dates) if pv == "s1" else None
-            r = sc.run_elbow_for_dataset(
+            band_indexes = _sc().band_indexes_from_dates(path, payload.selected_dates) if pv == "s1" else None
+            r = _sc().run_elbow_for_dataset(
                 path,
                 k_min=k_min,
                 k_max=k_max,
@@ -386,7 +398,7 @@ def cluster_gmm(
         )
 
     out_dir = _tenant_storage(tenant_id, payload.project_id, _cluster_out_dir_name(pv))
-    removed_n, out_abs = sc.clear_cluster_gmm_dir(out_dir)
+    removed_n, out_abs = _sc().clear_cluster_gmm_dir(out_dir)
     out_results: list[dict] = []
     logger.info(
         "cluster GMM project=%s variant=%s out=%s keys=%s eliminados=%s",
@@ -403,8 +415,8 @@ def cluster_gmm(
         path = Path(ds["path"])
         try:
             dk = str(ds.get("kind") or "index").strip().lower()
-            band_indexes = sc.band_indexes_from_dates(path, payload.selected_dates) if pv == "s1" else None
-            r = sc.run_gmm_for_dataset(
+            band_indexes = _sc().band_indexes_from_dates(path, payload.selected_dates) if pv == "s1" else None
+            r = _sc().run_gmm_for_dataset(
                 path,
                 n_components=k,
                 max_samples=payload.max_samples,
@@ -429,7 +441,7 @@ def cluster_gmm(
     dashboard_b64 = ""
     try:
         items = [(f"{o['key']} Cluster", o["preview_png_base64"]) for o in out_results]
-        dashboard_b64 = sc.plot_dashboard_grid_png(items)
+        dashboard_b64 = _sc().plot_dashboard_grid_png(items)
     except Exception as exc:
         logger.warning("Panel resumen GMM no generado: %s", exc)
 

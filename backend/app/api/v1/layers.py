@@ -17,6 +17,7 @@ from app.api.deps import (
     tenant_from_jwt,
 )
 from app.api.v1.helpers import _tenant_storage, validate_upload_size
+from app.application.agro.repos import layers_repo
 from app.application.agro.layer_mvt import (
     MVT_SOURCE_LAYER,
     RenderLayerMvtTile,
@@ -65,7 +66,7 @@ async def upload_shapefile(
     db.refresh(layer)
     sync_meta: dict = {"mvt_ready": False, "bbox": None}
     try:
-        sync_meta = SyncLayerGeom().execute(db, layer=layer)
+        sync_meta = SyncLayerGeom().execute(layers_repo(db), layer=layer)
     except Exception as exc:
         logger.warning("upload-shapefile: sync geom falló layer=%s: %s", layer.id, exc)
     return {
@@ -89,7 +90,7 @@ def list_layers(
         .filter(Layer.project_id == project_id, Layer.tenant_id == tenant_id)
         .all()
     )
-    meta_by_id = layer_geom_meta(db, layer_ids=[l.id for l in layers])
+    meta_by_id = layer_geom_meta(layers_repo(db), layer_ids=[l.id for l in layers])
     return [
         {
             "id": l.id,
@@ -231,7 +232,7 @@ def sync_layer_geom(
     if not layer:
         raise HTTPException(status_code=404, detail="Layer not found")
     try:
-        out = SyncLayerGeom().execute(db, layer=layer)
+        out = SyncLayerGeom().execute(layers_repo(db), layer=layer)
     except Exception as exc:
         logger.exception("sync-geom falló layer=%s", layer_id)
         raise HTTPException(status_code=500, detail=f"sync-geom failed: {exc}") from exc
@@ -269,7 +270,7 @@ def get_layer_mvt_tile(
     if not layer:
         raise HTTPException(status_code=404, detail="Layer not found")
     try:
-        payload = RenderLayerMvtTile().execute(db, layer=layer, z=z, x=x, y=y)
+        payload = RenderLayerMvtTile().execute(layers_repo(db), layer=layer, z=z, x=x, y=y)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LookupError:

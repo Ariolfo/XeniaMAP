@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Worker Celery con recarga al cambiar .py (misma idea que docker-compose.yml → servicio worker).
-# Uso: desde la raíz del repo o desde backend/
-#   ./run_celery_worker_dev.sh
+# Worker Celery con recarga al cambiar .py (compose: worker-agro / worker-fire).
+# Uso:
+#   ./run_celery_worker_dev.sh          # cola agro (default)
+#   ./run_celery_worker_dev.sh fire     # cola fire
+#   CELERY_QUEUE=fire ./run_celery_worker_dev.sh
 #
 # Antes: pip install -r requirements.txt (incluye watchfiles y celery).
 # Variables típicas en local (ajusta a tu máquina; puedes ponerlas en .env en la raíz del repo):
@@ -25,11 +27,20 @@ fi
 export STORAGE_PATH="${STORAGE_PATH:-$REPO_ROOT/data/storage}"
 mkdir -p "$STORAGE_PATH"
 
+QUEUE="${1:-${CELERY_QUEUE:-agro}}"
+case "$QUEUE" in
+  agro|fire) ;;
+  *)
+    echo "Cola inválida: $QUEUE (use agro|fire)" >&2
+    exit 2
+    ;;
+esac
+
 if ! python3 -c "import watchfiles, celery" 2>/dev/null; then
   echo "Instalando dependencias (pip install -r requirements.txt)…" >&2
   python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"
 fi
 
 exec watchfiles --filter python \
-  'celery -A app.tasks.celery_app.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=2' \
+  "celery -A app.tasks.celery_app.celery_app worker -Q ${QUEUE} --loglevel=info --concurrency=1 --max-tasks-per-child=2" \
   .

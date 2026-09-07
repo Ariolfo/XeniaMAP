@@ -83,7 +83,7 @@ Owners per context: [`module_owners.md`](module_owners.md).
 
 - Team has a single vocabulary: Modular A now, Hexagonal-first, Clean-lite, B later.
 - PRs can be reviewed against DoD and import rules without debating microservices.
-- Phases H1–H5 of the roadmap implement this ADR; B1 is optional extraction readiness.
+- Phases H1–H5 of the roadmap implement this ADR; **B1** adds extractable contracts (Celery queues `agro`/`fire` + docs) without requiring microservices.
 - Existing fat files (`preprocess.py`, `process_dnbr.py`, SoilPlus, FE panels) are **debt scheduled in H1/H4**, not blockers for accepting this ADR.
 
 ## Non-goals

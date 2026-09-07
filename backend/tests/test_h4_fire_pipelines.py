@@ -91,22 +91,24 @@ def test_write_aoi_delegate():
 
 
 def test_seed_and_project_link_ucs_delegate():
-    db = MagicMock()
+    uow = MagicMock()
+    handle = object()
+    uow.persistence_handle.return_value = handle
     admin = MagicMock()
     with patch(
         "app.modules.fire.seed.seed_tolima_fire_orders",
         return_value={"created": []},
     ) as seed:
-        assert SeedTolimaFireOrders().execute(db, admin) == {"created": []}
-        seed.assert_called_once()
+        assert SeedTolimaFireOrders().execute(uow, admin) == {"created": []}
+        seed.assert_called_once_with(handle, admin)
     order = MagicMock()
     owner = MagicMock()
     with patch(
         "app.modules.fire.project_link.ensure_fire_order_project",
         return_value="proj",
     ) as ensure:
-        assert EnsureFireOrderProject().execute(db, order, owner) == "proj"
-        ensure.assert_called_once_with(db, order, owner)
+        assert EnsureFireOrderProject().execute(uow, order, owner) == "proj"
+        ensure.assert_called_once_with(handle, order, owner)
 
 
 def test_run_fire_download_job_dispatches_pipeline(monkeypatch):

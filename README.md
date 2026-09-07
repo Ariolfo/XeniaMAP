@@ -66,7 +66,7 @@ docker compose ps
 | Cambio | Rebuild |
 |--------|---------|
 | Solo `.py` / `.jsx` | no hace falta |
-| `backend/requirements.txt` | `docker compose build backend worker` |
+| `backend/requirements.txt` | `docker compose build backend worker-agro worker-fire` |
 | `frontend/package-lock.json` | `docker compose build frontend` (ver [`docker.md`](docs/ops/docker.md) si hay que resetear `node_modules`) |
 
 Stub IA (opcional): `docker compose --profile ai up -d --build ai_service`
@@ -98,9 +98,9 @@ Stub IA (opcional): `docker compose --profile ai up -d --build ai_service`
 ### Comandos útiles
 
 ```bash
-docker compose logs -f backend worker frontend
-docker compose restart backend worker
-docker compose -f docker-compose.yml -f docker-compose.snap.yml up -d worker   # SNAP S1
+docker compose logs -f backend worker-agro worker-fire frontend
+docker compose restart backend worker-agro worker-fire
+docker compose -f docker-compose.yml -f docker-compose.snap.yml up -d worker-agro   # SNAP S1
 docker compose down
 ```
 

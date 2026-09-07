@@ -8,10 +8,8 @@ import uuid
 from pathlib import Path
 
 import numpy as np
-import rasterio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sklearn.cluster import KMeans
 from shapely.geometry import Polygon
 from sqlalchemy.orm import Session
 
@@ -73,6 +71,8 @@ def _norm_iso_date(raw: str) -> str:
 
 def _collect_dates_from_index_stacks(tenant_id: int, project_id: int, pipeline_variant: str) -> list[str]:
     """Fechas únicas YYYY-MM-DD desde BAND_DATES_JSON en stacks bajo indices/ o indecesPS/."""
+    import rasterio
+
     root = _tenant_storage(tenant_id, project_id, indices_dir_name(pipeline_variant))
     if not root.is_dir():
         return []
@@ -113,6 +113,8 @@ def _collect_dates_from_index_stacks(tenant_id: int, project_id: int, pipeline_v
 
 def _collect_dates_from_s1_sar_stacks(tenant_id: int, project_id: int) -> list[str]:
     """Fechas únicas YYYY-MM-DD desde BAND_DATES_JSON en stacks SAR bajo s1indices/."""
+    import rasterio
+
     from app.services.s1_sar_indices import S1_SAR_STACKS_ROOT_NAME
 
     root = _tenant_storage(tenant_id, project_id, S1_SAR_STACKS_ROOT_NAME)
@@ -183,8 +185,10 @@ def preprocess_download(
 
         wkt = wkt_union_from_project_layers(db, payload.project_id, tenant_id, payload.layer_id)
         try:
+            from app.application.agro.repos import raster_layers_repo
+
             return StartSentinel2ProjectDownload().execute(
-                db=db,
+                raster_layers=raster_layers_repo(db),
                 tenant_id=tenant_id,
                 project_id=payload.project_id,
                 start_date=payload.start_date,
@@ -201,8 +205,10 @@ def preprocess_download(
             code = 500 if "credentials" in detail.lower() else 503
             raise HTTPException(status_code=code, detail=detail) from exc
 
+    from app.application.agro.repos import raster_layers_repo
+
     return WriteStubProjectDownload().execute(
-        db=db,
+        raster_layers=raster_layers_repo(db),
         tenant_id=tenant_id,
         project_id=payload.project_id,
         source=payload.source,
@@ -273,8 +279,10 @@ async def preprocess_sentinel1_download(
             raise HTTPException(status_code=400, detail="No se pudo obtener geometría desde la capa vectorial.")
 
     try:
+        from app.application.agro.repos import raster_layers_repo
+
         return StartSentinel1ProjectDownload().execute(
-            db=db,
+            raster_layers=raster_layers_repo(db),
             tenant_id=tenant_id,
             project_id=project_id,
             start_date=start_date,
@@ -307,8 +315,10 @@ def sentinel_download_status(
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
+        from app.application.agro.repos import raster_layers_repo
+
         return GetSentinelDownloadStatus().execute(
-            db=db,
+            raster_layers=raster_layers_repo(db),
             tenant_id=tenant_id,
             project_id=project_id,
             raster_id=raster_id,
@@ -479,8 +489,10 @@ def get_recortes_inventory(
     from app.application.agro.recortes_inventory import ListRecortesInventory
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
+    from app.application.agro.repos import raster_layers_repo
+
     return ListRecortesInventory().execute(
-        db,
+        raster_layers_repo(db),
         tenant_id=tenant_id,
         project_id=project_id,
         pipeline_variant=pipeline_variant,
@@ -510,8 +522,10 @@ def get_recorte_preview_disk(
 
     require_project_dashboard_access(db, user, tenant_id, project_id)
     try:
+        from app.application.agro.repos import raster_layers_repo
+
         png = PreviewRecortePng().execute(
-            db,
+            raster_layers_repo(db),
             tenant_id=tenant_id,
             project_id=project_id,
             recorte_relpath=recorte_relpath,
@@ -851,6 +865,8 @@ def preprocess_cluster(
     src_path = _existing_raster_path(raster)
     out_path = _tenant_storage(tenant_id, payload.project_id, "preprocess") / f"cluster_{uuid.uuid4().hex}.tif"
 
+    import rasterio
+
     k = max(2, min(10, payload.clusters))
     with rasterio.open(src_path) as src:
         band = src.read(1).astype("float32")
@@ -878,8 +894,10 @@ def preprocess_sentinel1_recortes(
 
     project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     try:
+        from app.application.agro.repos import layers_repo
+
         return EnqueueS1GrdRecortes().execute(
-            db=db,
+            layers=layers_repo(db),
             tenant_id=tenant_id,
             project_id=payload.project_id,
             project_name=project.name,
@@ -1006,8 +1024,10 @@ async def preprocess_ps_recorte_clip(
 
     try:
         filenames = parse_filenames_json(filenames_json)
+        from app.application.agro.repos import layers_repo
+
         return EnqueuePsRecorteClip().execute(
-            db=db,
+            layers=layers_repo(db),
             tenant_id=tenant_id,
             project_id=project_id,
             wkt=wkt,
@@ -1042,8 +1062,10 @@ def preprocess_s2_l2a_recortes(
     project = require_project_dashboard_access(db, user, tenant_id, payload.project_id)
     wkt = wkt_union_from_project_layers(db, payload.project_id, tenant_id, payload.layer_id)
     try:
+        from app.application.agro.repos import layers_repo
+
         return EnqueueS2L2aRecortes().execute(
-            db=db,
+            layers=layers_repo(db),
             tenant_id=tenant_id,
             project_id=payload.project_id,
             project_name=project.name,

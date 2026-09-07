@@ -189,7 +189,21 @@ const PHASES: Phase[] = [
       "Extracción solo con trigger real: dNBR/SNAP, SoilPlus/GPU, ingest CDSE",
     ],
     fat: ["Worker concurrency=1", "Redis/DB/disco compartidos"],
-    exit: "Se puede extraer Fire GIS o SoilPlus sin reescribir el mapa cliente",
+    exit: "Hecho 2026-09-07 — colas agro/fire + contratos BC + data bounds (sin microservicio)",
+  },
+  {
+    id: "H6",
+    track: "Hex harden",
+    title: "Endurecimiento monolito post-H5",
+    goal: "Deuda H5",
+    weeks: "1 sprint",
+    outcomes: [
+      "Más UC sin Session (Fire enqueue + Layer/RasterLayer repos)",
+      "UoW con fire_orders/layers/raster_layers",
+      "requirements-common + API sin boto3 / worker con boto3",
+    ],
+    fat: ["Calidad/format", "Extracción BC c/ trigger"],
+    exit: "Hecho 2026-09-07 — UoW/repos + slim boto3; deuda fina cerrada",
   },
 ];
 
@@ -208,7 +222,7 @@ const METRICS = [
   },
   {
     metric: "Latencia cliente",
-    target: "p95 preview/tiles; SoilPlus sync → job si p95 alto",
+    target: "p95 preview/tiles; SoilPlus execute-save vía Celery+poll (hecho)",
   },
   {
     metric: "Latencia admin",
@@ -303,15 +317,36 @@ const TODO_H5 = [
   },
 ];
 
-const TODO_NEAR = [
+const TODO_B1 = [
   {
     id: "i",
-    content: "B1: contratos extractables solo con trigger (SNAP/GPU/CDSE)",
-    status: "pending" as const,
+    content: "B1: colas Celery agro/fire + workers compose + contratos",
+    status: "completed" as const,
   },
+];
+
+const TODO_H6 = [
   {
     id: "j",
-    content: "Deuda: UC residuales Session→UoW; slim real requirements-api",
+    content: "H6: UoW/repos piloto + requirements-api sin boto3",
+    status: "completed" as const,
+  },
+];
+
+const TODO_NEAR = [
+  {
+    id: "k",
+    content: "Más UC Session→repos (downloads/MVT/rasters) + lazy GIS API",
+    status: "completed" as const,
+  },
+  {
+    id: "l",
+    content: "SoilPlus→Celery+FE poll; Fire seed vía UoW; inventory→repos",
+    status: "completed" as const,
+  },
+  {
+    id: "m",
+    content: "Extracción BC solo con trigger (SNAP/GPU/CDSE)",
     status: "pending" as const,
   },
 ];
@@ -486,15 +521,24 @@ export default function XeniaMapHexagonalModularRoadmap() {
 
       <Grid columns={2} gap={16}>
         <Card>
-          <CardHeader>H0–H5 hechos</CardHeader>
+          <CardHeader>H0–H6 + B1 hechos</CardHeader>
           <CardBody>
             <TodoList
-              todos={[...TODO_H0, ...TODO_H1, ...TODO_H2, ...TODO_H3, ...TODO_H4, ...TODO_H5]}
+              todos={[
+                ...TODO_H0,
+                ...TODO_H1,
+                ...TODO_H2,
+                ...TODO_H3,
+                ...TODO_H4,
+                ...TODO_H5,
+                ...TODO_B1,
+                ...TODO_H6,
+              ]}
             />
           </CardBody>
         </Card>
         <Card>
-          <CardHeader>Próximo (B1 + deuda H5)</CardHeader>
+          <CardHeader>Próximo (residual + extracción c/ trigger)</CardHeader>
           <CardBody>
             <TodoList todos={TODO_NEAR} />
           </CardBody>

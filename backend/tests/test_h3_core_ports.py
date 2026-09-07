@@ -75,21 +75,14 @@ def test_fire_xyz_tile_uses_tile_port(tmp_path: Path, monkeypatch):
 def test_render_layer_mvt_uses_tile_port():
     tiles = MagicMock()
     tiles.render_layer_mvt_tile.return_value = b"mvt"
-    db = MagicMock()
+    layers = MagicMock()
+    layers.geom_meta.return_value = {7: {"mvt_ready": True}}
+    layers.persistence_handle.return_value = object()
     layer = MagicMock()
     layer.id = 7
     layer.tenant_id = 1
     layer.project_id = 2
-
-    monkeypatch_meta = MagicMock(return_value={7: {"mvt_ready": True}})
-    import app.application.agro.layer_mvt as mvt_mod
-
-    original = mvt_mod.layer_geom_meta
-    mvt_mod.layer_geom_meta = monkeypatch_meta
-    try:
-        out = RenderLayerMvtTile(tiles=tiles).execute(db, layer=layer, z=5, x=1, y=1)
-    finally:
-        mvt_mod.layer_geom_meta = original
+    out = RenderLayerMvtTile(tiles=tiles).execute(layers, layer=layer, z=5, x=1, y=1)
     assert out == b"mvt"
     tiles.render_layer_mvt_tile.assert_called_once()
 
@@ -119,7 +112,8 @@ def test_enqueue_fire_download_via_job_queue(monkeypatch):
     order.post_end = date(2024, 2, 10)
     order.max_cloud_cover = 90
     order.status = "pendiente"
-    db = MagicMock()
+    repo = MagicMock()
+    repo.save.side_effect = lambda o: o
 
     monkeypatch.setattr(
         "app.application.fire.orders.fire_storage_root",
@@ -131,10 +125,11 @@ def test_enqueue_fire_download_via_job_queue(monkeypatch):
         raising=False,
     )
 
-    out = EnqueueFireDownloadS2(jobs=jobs).execute(order=order, db=db)
+    out = EnqueueFireDownloadS2(jobs=jobs).execute(order=order, fire_orders=repo)
     assert out["task_id"] == "fire-task"
     assert order.download_task_id == "fire-task"
     assert jobs.enqueue.call_args.kwargs["task_name"] == "fire_download_s2"
+    assert repo.save.call_count >= 2
 
 
 def test_start_s2_download_via_job_queue(monkeypatch):
@@ -161,8 +156,14 @@ def test_start_s2_download_via_job_queue(monkeypatch):
         lambda **kw: raster,
     )
 
+    repo = MagicMock()
+    def _save(r):
+        r.id = 99
+        return r
+    repo.save.side_effect = _save
+
     out = StartSentinel2ProjectDownload(jobs=jobs).execute(
-        db=db,
+        raster_layers=repo,
         tenant_id=1,
         project_id=2,
         start_date="2024-01-01",
@@ -179,7 +180,7 @@ def test_start_s2_download_via_job_queue(monkeypatch):
 def test_start_s2_download_requires_credentials():
     with pytest.raises(RuntimeError, match="Copernicus"):
         StartSentinel2ProjectDownload(jobs=MagicMock()).execute(
-            db=MagicMock(),
+            raster_layers=MagicMock(),
             tenant_id=1,
             project_id=2,
             start_date="2024-01-01",

@@ -8,9 +8,8 @@ from typing import Any
 
 import numpy as np
 import rasterio
-from sqlalchemy.orm import Session
-
 from app.core.storage_paths import _tenant_storage, ensure_external_sensor_download_dirs
+from app.domain.agro.repositories import RasterLayerRepository
 from app.domain.shared.ports import JobQueuePort
 from app.infrastructure.composition import default_job_queue
 from app.models.models import RasterLayer
@@ -28,7 +27,7 @@ class StartSentinel2ProjectDownload:
     def execute(
         self,
         *,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         tenant_id: int,
         project_id: int,
         start_date: str | None,
@@ -74,9 +73,7 @@ class StartSentinel2ProjectDownload:
                 "download_root": str(out_dir),
             },
         )
-        db.add(raster)
-        db.commit()
-        db.refresh(raster)
+        raster_layers.save(raster)
 
         from app.tasks.jobs import download_sentinel2
 
@@ -97,7 +94,7 @@ class StartSentinel2ProjectDownload:
             **(raster.raster_metadata or {}),
             "celery_task_id": task_id,
         }
-        db.commit()
+        raster_layers.save(raster)
 
         return {
             "status": "downloading",
@@ -114,7 +111,7 @@ class WriteStubProjectDownload:
     def execute(
         self,
         *,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         tenant_id: int,
         project_id: int,
         source: str,
@@ -146,9 +143,7 @@ class WriteStubProjectDownload:
             cog_path=str(out_path),
             raster_metadata={"source": source, "type": "download"},
         )
-        db.add(raster)
-        db.commit()
-        db.refresh(raster)
+        raster_layers.save(raster)
         return {"status": "ok", "raster_layer_id": raster.id}
 
 
@@ -175,10 +170,13 @@ class StartSentinel1ProjectDownload:
     El WKT ya debe venir resuelto (capa o archivo AOI) desde el controller.
     """
 
+    def __init__(self, jobs: JobQueuePort | None = None) -> None:
+        self._jobs = jobs or default_job_queue()
+
     def execute(
         self,
         *,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         tenant_id: int,
         project_id: int,
         start_date: str,
@@ -236,14 +234,13 @@ class StartSentinel1ProjectDownload:
                 "download_root": str(sensor_dir),
             },
         )
-        db.add(raster)
-        db.commit()
-        db.refresh(raster)
+        raster_layers.save(raster)
 
         from app.tasks.jobs import download_sentinel1
 
         try:
-            async_result = download_sentinel1.delay(
+            task_id = self._jobs.enqueue(
+                download_sentinel1,
                 wkt,
                 str(start_date).strip(),
                 str(end_date).strip(),
@@ -251,6 +248,9 @@ class StartSentinel1ProjectDownload:
                 raster.id,
                 database_url,
                 images_per_month,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                task_name="download_sentinel1",
             )
         except Exception as exc:
             raise RuntimeError(
@@ -259,20 +259,14 @@ class StartSentinel1ProjectDownload:
 
         raster.raster_metadata = {
             **(raster.raster_metadata or {}),
-            "celery_task_id": async_result.id,
+            "celery_task_id": task_id,
         }
-        db.commit()
-        register_celery_task(
-            async_result.id,
-            tenant_id=tenant_id,
-            project_id=project_id,
-            task_name="download_sentinel1",
-        )
+        raster_layers.save(raster)
 
         return {
             "status": "downloading",
             "raster_layer_id": raster.id,
-            "task_id": async_result.id,
+            "task_id": task_id,
             "output_dir": str(sensor_dir),
             "download_subpath": encoded_dest,
             "sentinel1_subdir": str(sensor_dir),
@@ -285,7 +279,7 @@ class GetSentinelDownloadStatus:
     def execute(
         self,
         *,
-        db: Session,
+        raster_layers: RasterLayerRepository,
         tenant_id: int,
         project_id: int,
         raster_id: int,
@@ -294,14 +288,8 @@ class GetSentinelDownloadStatus:
 
         from app.tasks.celery_app import celery_app
 
-        raster = (
-            db.query(RasterLayer)
-            .filter(
-                RasterLayer.id == raster_id,
-                RasterLayer.project_id == project_id,
-                RasterLayer.tenant_id == tenant_id,
-            )
-            .first()
+        raster = raster_layers.get_by_id_for_project(
+            raster_id, project_id=project_id, tenant_id=tenant_id
         )
         if not raster:
             raise LookupError("Raster not found")

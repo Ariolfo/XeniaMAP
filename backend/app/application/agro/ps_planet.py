@@ -8,11 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import rasterio
-from sqlalchemy.orm import Session
-
 from app.core.celery_task_registry import register_celery_task
 from app.core.storage_paths import _tenant_storage, resolve_source_subpath
-from app.models.models import Layer
+from app.domain.agro.repositories import LayerRepository
 from app.services.preprocess_pipeline_variant import indices_dir_name
 from app.services.ps_spatiotemporal_cluster import (
     cluster_map_to_png,
@@ -131,7 +129,7 @@ class EnqueuePsRecorteClip:
     def execute(
         self,
         *,
-        db: Session,
+        layers: LayerRepository,
         tenant_id: int,
         project_id: int,
         wkt: str | None,
@@ -147,14 +145,8 @@ class EnqueuePsRecorteClip:
         kind = normalize_ps_clip_source(source)
 
         if require_layer_exists and layer_id is not None:
-            found = (
-                db.query(Layer)
-                .filter(
-                    Layer.id == layer_id,
-                    Layer.project_id == project_id,
-                    Layer.tenant_id == tenant_id,
-                )
-                .first()
+            found = layers.get_by_id_for_project(
+                layer_id, project_id=project_id, tenant_id=tenant_id
             )
             if not found:
                 raise LookupError(f"No existe la capa vectorial {layer_id} en este proyecto.")

@@ -1,7 +1,7 @@
 # Checkpoint — Roadmap Hexagonal + Modular
 
 **Fecha:** 2026-09-07  
-**Estado:** **H0–H5 hechos.** Siguiente: **B1** solo con trigger operativo (extraer BC).
+**Estado:** **H0–H5 + B1 + H6 hechos.** Extracción de microservicio: solo con trigger.
 
 ## Dónde está el canvas
 
@@ -12,34 +12,25 @@
 
 ## Secuencia
 
-`H0 ✓ → H1 ✓ → H2 ✓ → H3 ✓ → H4 ✓ → H5 ✓ → B1`
+`H0 ✓ → … → H5 ✓ → B1 ✓ → H6 ✓` · extracción BC con trigger
 
-## H5 entregado
+## H6 + residual + deuda fina entregado
 
 | Ítem | Qué |
 |------|-----|
-| DTOs FIRMS | `FirmsHotspotRecord` en `domain/fire/ports.py`; adapter convierte DataFrame → records |
-| TileRenderPort | `db: Any` opaco (sin Session en firma de puerto) |
-| UoW / repos piloto | `domain/shared/uow.py`, `FireOrderRepository`; acceso Fire + `project_name` vía repos |
-| import-linter | `backend/pyproject.toml` (`[tool.importlinter]`); CI `lint-imports` |
-| Coverage | umbral `application/` **≥18%** |
-| Docker | `Dockerfile` → `xeniamap-api:local`; `Dockerfile.worker` → `xeniamap-worker:local` |
+| UoW / repos piloto H6 | Fire enqueue, Layer/RasterLayer get, boto3 solo worker |
+| Residual Session→repos | downloads S1/S2/stub, MVT sync/meta/tiles, upload/delete raster |
+| GIS API | lazy-import SoilPlus / cluster / preprocess rasterio |
+| Deuda fina | Fire seed/project_link vía UoW; `recortes_inventory` → RasterLayerRepo; SoilPlus execute-save → Celery + FE poll |
 
-### Residual H5 (documentado)
+### Aún fuera (no bloquea)
 
-- Muchos UC aún reciben `Session` (download, rasters, MVT, pipeline_jobs, seed).
-- `requirements-api.txt` / `requirements-worker.txt` aún delegan a `requirements.txt` compartido.
-
-### Tests
-
-`tests/test_h5_hex_total.py` (+ suites H3/H4 / FIRMS).
-
-## Siguiente: B1 (solo con trigger)
-
-Contratos extractables / colas agro·fire / límites de datos — **no** abrir sin necesidad operativa (SNAP, GPU SoilPlus, ingest CDSE).
+- Reescritura total de `modules.fire` seed/project_link sin Session (hoy envueltos por UoW)
+- Extracción BC microservicio (solo con trigger SNAP/GPU/CDSE)
+- Calidad: ruff format amplio, cov↑, ESLint max-warnings→0
 
 ## Relacionado
 
-- Arquitectura: [`docs/architecture.md`](../architecture.md)  
-- ADR: [`adr-002-hexagonal-modular.md`](adr-002-hexagonal-modular.md)  
-- Calidad: [`quality.md`](quality.md) · Docker: [`docker.md`](docker.md)
+- B1 contratos: [`bounded_context_contracts.md`](bounded_context_contracts.md)  
+- Datos: [`data_bounds.md`](data_bounds.md)  
+- Docker: [`docker.md`](docker.md)
