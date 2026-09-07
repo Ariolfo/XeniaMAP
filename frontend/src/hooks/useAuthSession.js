@@ -213,28 +213,18 @@ export default function useAuthSession({
     setMessage("");
     try {
       const r = await api.post("/auth/check-email", { email: em });
-      if (r.data?.exists) {
-        const adminHit =
-          !!r.data?.is_admin || String(r.data?.role || "").toLowerCase() === "admin";
-        if (adminHit) {
-          setAuthStep("password");
-          setMessage("Correo admin detectado. Ingrese su contraseña para continuar.");
-        } else {
-          const o = await api.post("/auth/request-otp", { email: em });
-          setPendingRegEmail(em);
-          setAuthStep("otp");
-          setOtpDebug(o.data?.debug_otp ?? null);
-          setOtpHint(o.data?.message || "");
-          setMessage(o.data?.message || "Se enviará un código de verificación a su correo.");
-        }
-      } else {
-        const o = await api.post("/auth/request-otp", { email: em });
-        setPendingRegEmail(em);
-        setAuthStep("otp");
-        setOtpDebug(o.data?.debug_otp ?? null);
-        setOtpHint(o.data?.message || "");
-        setMessage(o.data?.message || "Se enviará un código de verificación a su correo.");
+      const next = String(r.data?.next || "").toLowerCase();
+      if (next === "password") {
+        setAuthStep("password");
+        setMessage("Ingrese su contraseña para continuar.");
+        return;
       }
+      const o = await api.post("/auth/request-otp", { email: em });
+      setPendingRegEmail(em);
+      setAuthStep("otp");
+      setOtpDebug(o.data?.debug_otp ?? null);
+      setOtpHint(o.data?.message || "");
+      setMessage(o.data?.message || "Se enviará un código de verificación a su correo.");
     } catch (error) {
       const detail =
         error?.response?.data?.detail || error.message || "Error al comprobar el correo";

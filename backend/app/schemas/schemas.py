@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from typing import Literal
 
 
 class RegisterRequest(BaseModel):
@@ -9,14 +10,34 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def password_strength(cls, v):
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
+        from app.core.password_policy import PasswordRejected, validate_password_local
+
+        try:
+            return validate_password_local(v)
+        except PasswordRejected as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    """F9: cambio de contraseña autenticado (política local + HIBP en el endpoint)."""
+
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_strength(cls, v):
+        from app.core.password_policy import PasswordRejected, validate_password_local
+
+        try:
+            return validate_password_local(v)
+        except PasswordRejected as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class TokenResponse(BaseModel):
@@ -448,9 +469,9 @@ class CheckEmailRequest(BaseModel):
 
 
 class CheckEmailResponse(BaseModel):
-    exists: bool
-    role: str | None = None
-    is_admin: bool = False
+    """F8: no revela existencia ni rol; solo el siguiente paso del flujo."""
+
+    next: Literal["password", "otp"]
 
 
 class RequestOtpRequest(BaseModel):

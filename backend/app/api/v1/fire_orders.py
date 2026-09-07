@@ -35,6 +35,7 @@ from app.application.fire.results import (
     ListFireResultLayers,
 )
 from app.core.config import settings
+from app.core.http_errors import CLIENT_INTERNAL, CLIENT_UNAVAILABLE, client_safe_message
 from app.db.session import get_db
 from app.infrastructure.firms.live_cache import (
     get_firms_live_cached,
@@ -63,12 +64,17 @@ logger = logging.getLogger(__name__)
 
 def _http_from_app(exc: Exception) -> HTTPException:
     if isinstance(exc, LookupError):
-        return HTTPException(status_code=404, detail=str(exc) or "No encontrado")
+        return HTTPException(
+            status_code=404,
+            detail=client_safe_message(exc, fallback="No encontrado"),
+        )
     if isinstance(exc, ValueError):
-        msg = str(exc)
-        code = 400 if "Primero debe" in msg or "FIRMS" in msg else 422
+        raw = str(exc)
+        msg = client_safe_message(exc, fallback="Solicitud inválida")
+        code = 400 if "Primero debe" in raw or "FIRMS" in raw else 422
         return HTTPException(status_code=code, detail=msg)
-    return HTTPException(status_code=500, detail=str(exc))
+    logger.exception("Unhandled fire application error")
+    return HTTPException(status_code=500, detail=CLIENT_INTERNAL)
 
 
 def _summary(order: FireOrder, db: Session | None = None) -> FireOrderSummary:
@@ -146,10 +152,13 @@ def seed_tolima(
             )
             result["projects"] = linked
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail=client_safe_message(exc, fallback="No encontrado"),
+        ) from exc
     except Exception as exc:
         logger.exception("Fire seed failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=CLIENT_INTERNAL) from exc
     return result
 
 
@@ -164,10 +173,13 @@ def materialize_projects(
             unit_of_work_from_session(db), applicant_email=applicant_email
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404,
+            detail=client_safe_message(exc, fallback="No encontrado"),
+        ) from exc
     except Exception as exc:
         logger.exception("Fire materialize failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=CLIENT_INTERNAL) from exc
 
 
 @router.get("", response_model=list[FireOrderSummary])
@@ -436,10 +448,16 @@ def fire_firms_live(
             hours=hours,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail=client_safe_message(exc, fallback="Solicitud inválida"),
+        ) from exc
     except RuntimeError as exc:
         # Sin clave / config: no hay stale útil
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=client_safe_message(exc, fallback=CLIENT_UNAVAILABLE),
+        ) from exc
     except Exception as exc:
         stale = get_firms_live_stale(order.id, hours)
         if stale is not None:
@@ -449,11 +467,11 @@ def fire_firms_live(
                 "request_name": order.request_name,
                 "cached": True,
                 "stale": True,
-                "stale_reason": str(exc)[:240],
+                "stale_reason": "Upstream FIRMS unavailable",
                 **stale,
             }
         logger.exception("firms-live order %s", order_id)
-        raise HTTPException(status_code=502, detail=f"Error consultando FIRMS: {exc}") from exc
+        raise HTTPException(status_code=502, detail="Error consultando FIRMS") from exc
 
     set_firms_live_cached(order.id, hours, payload)
     return {
@@ -481,7 +499,7 @@ def fire_result_geojson(
         raise _http_from_app(exc) from exc
     except Exception as exc:
         logger.exception("fire result geojson")
-        raise HTTPException(status_code=500, detail=f"No se pudo leer GPKG: {exc}") from exc
+        raise HTTPException(status_code=500, detail=CLIENT_INTERNAL) from exc
 
 
 @router.get("/{order_id}/results/preview")
@@ -515,7 +533,7 @@ def fire_result_preview(
         raise _http_from_app(exc) from exc
     except Exception as exc:
         logger.exception("fire result preview")
-        raise HTTPException(status_code=500, detail=f"No se pudo generar preview: {exc}") from exc
+        raise HTTPException(status_code=500, detail=CLIENT_INTERNAL) from exc
 
     if kind == "png":
         bounds_list = payload["bounds"]

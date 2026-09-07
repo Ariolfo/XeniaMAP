@@ -356,7 +356,9 @@ class GetSentinelDownloadStatus:
                 return done
 
             if celery_state == "FAILURE" or (ar.ready() and ar.failed()):
-                err = str(ar.result) if ar.result else "Error en la tarea"
+                from app.core.http_errors import log_celery_failure
+
+                err = log_celery_failure(task_id=str(task_id), result=ar.result)
                 return {
                     "ui_status": "failed",
                     "progress": 0,

@@ -35,6 +35,7 @@ from app.services.preprocess_pipeline_variant import (
     normalize_pipeline_variant,
 )
 from app.core.config import settings
+from app.core.http_errors import celery_progress_info, log_celery_failure
 from app.db.session import get_db
 from app.models.models import Layer, Project, RasterLayer, User
 from app.schemas.schemas import (
@@ -1154,8 +1155,16 @@ def preprocess_task_status(
     if ar.state == "SUCCESS":
         return {"state": ar.state, "ready": True, "result": ar.result}
     if ar.state == "FAILURE":
-        return {"state": ar.state, "ready": True, "error": str(ar.result) if ar.result else "failure"}
-    return {"state": ar.state, "ready": ar.ready(), "info": ar.info}
+        return {
+            "state": ar.state,
+            "ready": True,
+            "error": log_celery_failure(task_id=task_id, result=ar.result),
+        }
+    out: dict = {"state": ar.state, "ready": bool(ar.ready())}
+    progress = celery_progress_info(ar.info)
+    if progress:
+        out["info"] = progress
+    return out
 
 
 @router.post("/preprocess/ps-spatiotemporal-cluster/{project_id}")

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_admin, require_project_dashboard_access, tenant_from_jwt
 from app.api.v1.helpers import _tenant_storage
+from app.core.image_upload import InvalidImageUpload, mime_for_image_path, validate_raster_image_bytes
 from app.db.session import get_db
 from app.models.models import ProjectLandingText, User
 from app.schemas.schemas import (
@@ -317,17 +318,26 @@ async def upload_landing_media(
     """Sube una imagen para incrustar en la narrativa (Informe inteligente / Markdown)."""
     require_project_dashboard_access(db, admin, tenant_id, project_id)
     original = Path(str(file.filename or "image.png")).name
-    ext = Path(original).suffix.lower()
-    if ext not in _ALLOWED_IMAGE_EXT:
+    claimed_ext = Path(original).suffix.lower()
+    if claimed_ext not in _ALLOWED_IMAGE_EXT:
         raise HTTPException(
             status_code=400,
-            detail=f"Formato no soportado ({ext or 'sin extensión'}). Use: {', '.join(sorted(_ALLOWED_IMAGE_EXT))}",
+            detail=(
+                f"Formato no soportado ({claimed_ext or 'sin extensión'}). "
+                f"Use: {', '.join(sorted(_ALLOWED_IMAGE_EXT))}"
+            ),
         )
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Archivo vacío")
     if len(content) > 12 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="La imagen supera 12 MB")
+
+    try:
+        # F10: magic bytes / decode (Pillow); extensión canónica según contenido real.
+        ext, _media_type = validate_raster_image_bytes(content, claimed_ext=claimed_ext)
+    except InvalidImageUpload as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     media_dir = _landing_media_dir(tenant_id, project_id)
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -363,11 +373,12 @@ def get_landing_media(
     root = _landing_media_dir(tenant_id, project_id).resolve()
     if not path.is_file() or not path.is_relative_to(root):
         raise HTTPException(status_code=404, detail="Imagen no encontrada")
-    media = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(path.suffix.lower(), "application/octet-stream")
-    return FileResponse(path, media_type=media)
+    media = mime_for_image_path(path.suffix)
+    return FileResponse(
+        path,
+        media_type=media,
+        headers={
+            "Content-Disposition": f'inline; filename="{name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

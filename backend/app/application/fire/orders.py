@@ -135,16 +135,21 @@ def celery_task_meta(task_id: str | None) -> dict[str, Any] | None:
     if not task_id:
         return None
     try:
+        from app.core.http_errors import celery_progress_info, log_celery_failure
         from app.tasks.celery_app import celery_app
 
         res = celery_app.AsyncResult(task_id)
-        return {
-            "task_id": task_id,
-            "state": res.state,
-            "info": res.info if isinstance(res.info, dict) else {"raw": str(res.info)},
-        }
+        meta: dict[str, Any] = {"task_id": task_id, "state": res.state}
+        if res.state == "FAILURE":
+            meta["info"] = {"error": log_celery_failure(task_id=task_id, result=res.result)}
+        else:
+            progress = celery_progress_info(res.info)
+            if progress:
+                meta["info"] = progress
+        return meta
     except Exception as exc:
-        return {"task_id": task_id, "error": str(exc)}
+        logger.debug("celery_task_meta failed for %s: %s", task_id, exc)
+        return {"task_id": task_id, "error": "Task status unavailable"}
 
 
 class EnqueueFireDownloadS2:

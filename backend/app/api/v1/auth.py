@@ -12,11 +12,13 @@ from app.core.config import settings
 from app.core.mail import send_otp_email, smtp_configured
 from app.core.otp_store import set_otp, verify_and_consume_otp
 from app.core.security import decode_token, hash_password, verify_password
+from app.core.password_policy import PasswordRejected, assert_new_password
 from app.db.session import get_db
 from app.models.models import Tenant, User, UserAuditLog
 from app.schemas.schemas import (
     AdminCreateUserRequest,
     AdminCreateUserResponse,
+    ChangePasswordRequest,
     CheckEmailRequest,
     CheckEmailResponse,
     LoginRequest,
@@ -36,6 +38,12 @@ from app.schemas.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Respuesta uniforme de request-otp (F8: no filtrar admin vs resto).
+_OTP_REQUEST_OK_MESSAGE = (
+    "Si el correo admite verificación, recibirá un código en breve. "
+    "Revise la bandeja de entrada."
+)
 
 
 def _append_audit(
@@ -124,14 +132,45 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
     return _issue_and_set_cookies(response, user)
 
 
+@router.post("/auth/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """F9: cambia la contraseña de la sesión actual (política local + HIBP)."""
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    try:
+        new_pw = assert_new_password(payload.new_password, check_hibp=True)
+    except PasswordRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if verify_password(new_pw, user.hashed_password):
+        raise HTTPException(
+            status_code=400,
+            detail="New password must be different from the current password",
+        )
+    user.hashed_password = hash_password(new_pw)
+    _append_audit(
+        db,
+        actor_id=user.id,
+        action="password_changed",
+        target_user_id=user.id,
+        details={},
+    )
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/auth/check-email", response_model=CheckEmailResponse)
 def check_email(payload: CheckEmailRequest, db: Session = Depends(get_db)):
+    """F8: no enumera cuentas ni roles. Solo indica el siguiente paso del UI."""
     email = str(payload.email).strip().lower()
     user = db.query(User).filter(User.email == email).first()
-    if not user:
-        return {"exists": False, "role": None, "is_admin": False}
-    role = str(getattr(user, "role", "") or "").strip().lower() or None
-    return {"exists": True, "role": role, "is_admin": role == "admin"}
+    role = str(getattr(user, "role", "") or "").strip().lower() if user else ""
+    if user and role == "admin":
+        return {"next": "password"}
+    return {"next": "otp"}
 
 
 @router.post("/auth/request-otp", response_model=RequestOtpResponse)
@@ -139,10 +178,9 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
     email = str(payload.email).strip().lower()
     existing = db.query(User).filter(User.email == email).first()
     if existing and str(existing.role).strip().lower() == "admin":
-        raise HTTPException(
-            status_code=400,
-            detail="Este correo es administrador. Debe iniciar sesión con contraseña.",
-        )
+        # F8: misma forma/mensaje que un envío OK (sin filtrar que es admin).
+        logger.info("OTP request ignored for admin account (domain=%s)", email.split("@")[-1])
+        return {"message": _OTP_REQUEST_OK_MESSAGE, "debug_otp": None}
 
     simulate = bool(settings.otp_simulate)
     if simulate and settings.is_production():
@@ -185,7 +223,7 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
             detail="No se pudo enviar el correo de verificación. Intente más tarde.",
         )
     return {
-        "message": "Se envió un código de verificación a su correo. Revise la bandeja de entrada.",
+        "message": _OTP_REQUEST_OK_MESSAGE,
         "debug_otp": None,
     }
 
@@ -202,7 +240,8 @@ def verify_otp_and_register(
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         if str(existing.role).strip().lower() == "admin":
-            raise HTTPException(status_code=400, detail="Usuario admin requiere contraseña.")
+            # F8: no revelar que la cuenta es admin.
+            raise HTTPException(status_code=400, detail="Código incorrecto o expirado.")
         if not getattr(existing, "is_active", True):
             _user_inactive_response()
         return _issue_and_set_cookies(response, existing)

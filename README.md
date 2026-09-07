@@ -80,14 +80,18 @@ Stub IA (opcional): `docker compose --profile ai up -d --build ai_service`
 | Health     | http://localhost:8000/health |
 | Prometheus | http://localhost:9090 |
 | Grafana    | http://localhost:3000 |
-| Postgres   | localhost:5433 |
+| Postgres   | 127.0.0.1:5433 (solo loopback) |
+| Redis      | 127.0.0.1:6379 + `REDIS_PASSWORD` |
 
-### Auth (F0)
+### Auth (F0 / F6)
 
 - Producción: `OTP_SIMULATE=0` + `SMTP_*` (código por correo; **nunca** `debug_otp` en API)
 - Desarrollo: `OTP_SIMULATE=1` almacena el OTP en servidor; opcional `LOG_OTP=1` solo en logs del backend (no en JSON)
 - `APP_ENV=production` + `OTP_SIMULATE=1` → la app no arranca / request-otp responde 503
 - Admins bootstrap: `ADMIN_EMAILS` (coma-separados); el rol en DB manda para usuarios existentes
+- Rate limit auth (F6): `AUTH_RATE_LIMIT_MAX_REQUESTS` / `AUTH_RATE_LIMIT_WINDOW_SECONDS` (p. ej. 10/60s) sobre login, OTP y check-email; **fail-closed** si Redis no responde (503). El límite global (`RATE_LIMIT_*`) sigue fail-open para no tumbar galerías/tiles.
+- Contraseñas (F9): mínimo 10 caracteres con letra+dígito; `POST /auth/change-password` consulta HIBP (k-anonymity). Vars: `HIBP_ENABLED`, `HIBP_FAIL_OPEN`.
+- Ops local (F11): Postgres/Redis/Prometheus/Grafana/métricas workers en `127.0.0.1`; Redis con `--requirepass` (`REDIS_PASSWORD`). Tras cambiar Redis: `docker compose up -d redis backend worker-agro worker-fire --force-recreate`.
 
 ### Disco externo Data_XeniaMap
 
@@ -119,8 +123,8 @@ ngrok http --url=xeniamap.ngrok.app 5173
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5433/xeniamap
-export REDIS_URL=redis://localhost:6379/0
+export DATABASE_URL=postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/xeniamap
+export REDIS_URL=redis://:xeniamap-local-redis@127.0.0.1:6379/0
 export SECRET_KEY=dev-local-xeniamap-change-me
 export OTP_SIMULATE=1
 export EXTERNAL_DATA_ROOT=/mnt/disco3tb/Data_XeniaMap

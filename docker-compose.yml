@@ -1,22 +1,34 @@
 name: xeniamap
 
+# F11: Postgres/Redis solo en 127.0.0.1 + secretos vía .env.
+
 services:
   postgres:
     image: postgis/postgis:14-3.4
     environment:
-      POSTGRES_DB: xeniamap
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-xeniamap}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Volumen ya inicializado: cambiar POSTGRES_PASSWORD en .env NO rota la clave existente.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   redis:
     image: redis:7
+    # F11: requirepass; default solo lab local (definir REDIS_PASSWORD en .env).
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "${REDIS_PASSWORD:-xeniamap-local-redis}",
+        "--protected-mode",
+        "yes",
+      ]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   backend:
     build:
@@ -45,15 +57,18 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-xeniamap}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-xeniamap-local-redis}@redis:6379/0
       STORAGE_PATH: /data/storage
       EXTERNAL_DATA_ROOT: /data_xeniamap
       SECRET_KEY: ${SECRET_KEY}
       MAX_UPLOAD_MB: "4096"
-      # Límite global por IP (Redis); subir si galería RGB / muchas miniaturas devuelven 429.
+      # Límite global por IP (Redis, fail-open); subir si galería RGB / miniaturas → 429.
       RATE_LIMIT_WINDOW_SECONDS: "120"
       RATE_LIMIT_MAX_REQUESTS: "2000"
+      # F6: bucket auth (login/OTP/check-email) fail-closed — límites bajos.
+      AUTH_RATE_LIMIT_WINDOW_SECONDS: "60"
+      AUTH_RATE_LIMIT_MAX_REQUESTS: "10"
       PYTHONDONTWRITEBYTECODE: "1"
       # Volúmenes Docker: forzar polling para que --reload detecte cambios en .py (Linux/Mac/Win).
       WATCHFILES_FORCE_POLLING: "true"
@@ -90,15 +105,15 @@ services:
         ".",
       ]
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-xeniamap}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-xeniamap-local-redis}@redis:6379/0
       STORAGE_PATH: /data/storage
       EXTERNAL_DATA_ROOT: /data_xeniamap
       MAX_UPLOAD_MB: "4096"
       CELERY_METRICS_PORT: "9101"
       XENIAMAP_CELERY_QUEUES: agro
     ports:
-      - "9101:9101"
+      - "127.0.0.1:9101:9101"
     env_file:
       - .env
     depends_on:
@@ -124,15 +139,15 @@ services:
         ".",
       ]
     environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/xeniamap
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-xeniamap}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-xeniamap-local-redis}@redis:6379/0
       STORAGE_PATH: /data/storage
       EXTERNAL_DATA_ROOT: /data_xeniamap
       MAX_UPLOAD_MB: "4096"
       CELERY_METRICS_PORT: "9102"
       XENIAMAP_CELERY_QUEUES: fire
     ports:
-      - "9102:9102"
+      - "127.0.0.1:9102:9102"
     env_file:
       - .env
     depends_on:
@@ -152,7 +167,7 @@ services:
     command:
       ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
   frontend:
     build:
@@ -176,7 +191,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml
     depends_on:
@@ -185,7 +200,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
 

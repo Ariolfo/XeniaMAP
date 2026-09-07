@@ -67,9 +67,17 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
     cors_origin_regex: str = ""
     redis_url: str = "redis://localhost:6379/0"
-    # Límite por IP (middleware en ``main.py``); galerías RGB lanzan muchas peticiones en paralelo.
+    # Límite global por IP (middleware en ``main.py``); galerías RGB lanzan muchas peticiones en paralelo.
+    # Fail-open si Redis no está: no bloquea la API general.
     rate_limit_window_seconds: int = 60
     rate_limit_max_requests: int = 600
+    # F6: bucket estricto para login/OTP/check-email (fail-closed si Redis cae).
+    auth_rate_limit_window_seconds: int = 60
+    auth_rate_limit_max_requests: int = 10
+    # F9: Have I Been Pwned Passwords (k-anonymity). Desactivar solo en tests offline.
+    hibp_enabled: bool = True
+    hibp_timeout_seconds: float = 3.0
+    hibp_fail_open: bool = True
     ai_service_url: str = Field(
         default="http://localhost:8001",
         description="Stub IA opcional (perfil compose ``ai``). No requerido para Agro/Fire.",

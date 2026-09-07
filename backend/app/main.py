@@ -11,6 +11,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app.api.v1.routes import router as v1_router
 from app.core.auth_cookies import ACCESS_COOKIE
 from app.core.config import get_max_upload_mb, settings
+from app.core.rate_limit import is_auth_rate_limited_path
 from app.core.security import decode_token
 
 logging.basicConfig(level=logging.INFO)
@@ -98,36 +99,74 @@ def _get_redis():
     global _redis_client
     if _redis_client is None:
         try:
-            _redis_client = redis_lib.from_url(settings.redis_url, decode_responses=True)
-            _redis_client.ping()
+            client = redis_lib.from_url(settings.redis_url, decode_responses=True)
+            client.ping()
+            _redis_client = client
         except Exception:
             _redis_client = None
     return _redis_client
 
 
+def _invalidate_redis() -> None:
+    global _redis_client
+    _redis_client = None
+
+
+def _rate_limit_response(*, window: int, limit: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded",
+            "retry_after_seconds": window,
+            "limit_per_window": limit,
+        },
+    )
+
+
+def _incr_rate_limit(r, key: str, window: int) -> int:
+    count = r.incr(key)
+    if count == 1:
+        r.expire(key, window)
+    return int(count)
+
+
 @app.middleware("http")
 async def audit_and_rate_limit(request: Request, call_next):
     ip = request.client.host if request.client else "unknown"
+    path = request.url.path
+    auth_path = is_auth_rate_limited_path(path, api_prefix=settings.api_v1_prefix)
     r = _get_redis()
-    if r:
-        key = f"ratelimit:{ip}"
+
+    if auth_path:
+        # F6: fail-closed — sin Redis no se permiten intentos de login/OTP.
+        if r is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Rate limiter unavailable"},
+            )
+        window = max(1, int(settings.auth_rate_limit_window_seconds))
+        limit = max(1, int(settings.auth_rate_limit_max_requests))
+        try:
+            count = _incr_rate_limit(r, f"ratelimit:auth:{ip}", window)
+            if count > limit:
+                return _rate_limit_response(window=window, limit=limit)
+        except Exception:
+            _invalidate_redis()
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Rate limiter unavailable"},
+            )
+    elif r is not None:
+        # API general: fail-open si Redis falla (galerías / tiles).
         window = max(1, int(settings.rate_limit_window_seconds))
         limit = max(1, int(settings.rate_limit_max_requests))
         try:
-            count = r.incr(key)
-            if count == 1:
-                r.expire(key, window)
+            count = _incr_rate_limit(r, f"ratelimit:{ip}", window)
             if count > limit:
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "detail": "Rate limit exceeded",
-                        "retry_after_seconds": window,
-                        "limit_per_window": limit,
-                    },
-                )
+                return _rate_limit_response(window=window, limit=limit)
         except Exception:
-            pass
+            _invalidate_redis()
+
     token = _bearer_token_from_request(request)
     if token:
         try:

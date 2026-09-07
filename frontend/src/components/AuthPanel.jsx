@@ -25,9 +25,9 @@ export default function AuthPanel({
         {loading
           ? "Procesando…"
           : authStep === "email"
-            ? "Paso 1: indique su correo. Si es admin, se pedirá contraseña; usuarios cliente usan código."
+            ? "Paso 1: indique su correo. Continuará con código o contraseña según su cuenta."
             : authStep === "password"
-              ? "Este correo ya está registrado. Ingrese su contraseña."
+              ? "Ingrese su contraseña para continuar."
               : otpHint || "Paso 2: introduzca el código de verificación enviado a su correo."}
       </p>
       <label>

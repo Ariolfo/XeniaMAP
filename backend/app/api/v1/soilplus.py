@@ -8,6 +8,12 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_project_dashboard_access, tenant_from_jwt
+from app.core.http_errors import (
+    CLIENT_INTERNAL,
+    CLIENT_UNAVAILABLE,
+    client_safe_message,
+    http_from_app_exc,
+)
 from app.db.session import get_db
 from app.models.models import User
 
@@ -22,15 +28,8 @@ def _sp():
     return soilplus_mod
 
 
-
 def _map_app_exc(exc: Exception) -> HTTPException:
-    if isinstance(exc, LookupError):
-        return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, ValueError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, RuntimeError):
-        return HTTPException(status_code=500, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
+    return http_from_app_exc(exc, log=logger)
 
 
 def _call(fn, **kwargs):
@@ -167,7 +166,11 @@ def post_soilplus_execute_save(
             task_name="soilplus_execute_save",
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.warning("soilplus enqueue failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=client_safe_message(exc, fallback=CLIENT_UNAVAILABLE),
+        ) from exc
     return {"status": "queued", "task_id": task_id, "cv_engine": eng}
 
 
@@ -229,7 +232,7 @@ def get_soilplus_landing_mosaic(
         raise _map_app_exc(exc) from exc
     except Exception as exc:
         logger.exception("soilplus landing mosaic failed")
-        raise HTTPException(status_code=500, detail=f"No se pudo generar el mosaico: {exc}") from exc
+        raise HTTPException(status_code=500, detail=CLIENT_INTERNAL) from exc
     return Response(
         content=png,
         media_type="image/png",
