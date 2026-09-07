@@ -87,4 +87,9 @@ def get_celery_task_owner(task_id: str | None) -> dict[str, Any] | None:
     if time.time() > exp:
         _mem.pop(tid, None)
         return None
-    return payload
+    return {
+        "tenant_id": int(payload["tenant_id"]),
+        "project_id": (
+            int(payload["project_id"]) if payload.get("project_id") is not None else None
+        ),
+    }
