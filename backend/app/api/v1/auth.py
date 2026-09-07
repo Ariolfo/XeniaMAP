@@ -23,7 +23,6 @@ from app.schemas.schemas import (
     CheckEmailResponse,
     LoginRequest,
     RefreshRequest,
-    RegisterRequest,
     RequestOtpRequest,
     RequestOtpResponse,
     TokenResponse,
@@ -77,12 +76,13 @@ def _issue_and_set_cookies(response: Response, user: User, extra: dict | None = 
     return tokens
 
 
-@router.post("/auth/register", response_model=TokenResponse, deprecated=True)
-def register(payload: RegisterRequest):
+@router.post("/auth/register", deprecated=True)
+def register():
     """Deshabilitado (F1): el alta pública debe pasar por OTP.
 
     Usar ``POST /auth/request-otp`` y luego ``POST /auth/verify-otp``.
     La creación de usuarios por admin sigue en ``POST /auth/users``.
+    Sin body schema: siempre 410 (no validar política de contraseña en un endpoint muerto).
     """
     raise HTTPException(
         status_code=410,

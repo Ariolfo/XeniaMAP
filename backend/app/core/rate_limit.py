@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 # Rutas sensibles a brute-force / enumeración (sin prefijo /api/v1).
+# /auth/register queda fuera: siempre 410 (F1); no debe depender de Redis (fail-closed).
 AUTH_RATE_LIMIT_SUFFIXES: tuple[str, ...] = (
     "/auth/login",
-    "/auth/register",
     "/auth/request-otp",
     "/auth/verify-otp",
     "/auth/check-email",

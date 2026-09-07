@@ -18,6 +18,9 @@ def test_is_auth_rate_limited_path():
     assert is_auth_rate_limited_path("/api/v1/auth/login", api_prefix="/api/v1")
     assert is_auth_rate_limited_path("/api/v1/auth/request-otp", api_prefix="/api/v1")
     assert is_auth_rate_limited_path("/api/v1/auth/check-email", api_prefix="/api/v1")
+    assert is_auth_rate_limited_path("/api/v1/auth/change-password", api_prefix="/api/v1")
+    # F1: register deshabilitado (410) sin bucket auth / Redis.
+    assert not is_auth_rate_limited_path("/api/v1/auth/register", api_prefix="/api/v1")
     assert not is_auth_rate_limited_path("/api/v1/auth/me", api_prefix="/api/v1")
     assert not is_auth_rate_limited_path("/api/v1/projects", api_prefix="/api/v1")
     assert not is_auth_rate_limited_path("/health", api_prefix="/api/v1")
