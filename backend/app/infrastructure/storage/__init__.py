@@ -1,0 +1,1 @@
+"""Paquete storage adapters."""

@@ -27,9 +27,10 @@ Thumbs.db
 postgres_data/
 redis_data/
 
-# Storage uploads
-storage/
-data/
+# Storage uploads / datos locales (no el paquete Python infrastructure/storage)
+/storage/
+/data/
+data/storage/
 
 # Large satellite imagery
 *.zip
