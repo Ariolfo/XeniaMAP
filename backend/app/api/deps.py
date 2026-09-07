@@ -1,9 +1,10 @@
 from datetime import timedelta
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.core.auth_cookies import ACCESS_COOKIE
 from app.core.config import settings
 from app.core.security import create_token, decode_token
 from app.db.session import get_db
@@ -36,13 +37,27 @@ def issue_tokens(user: User, extra: dict | None = None):
     return out
 
 
+def _access_token_from_request(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    if credentials and credentials.credentials:
+        return credentials.credentials
+    cookie = request.cookies.get(ACCESS_COOKIE)
+    if cookie:
+        return cookie
+    return None
+
+
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> User:
-    if not credentials:
+    raw = _access_token_from_request(request, credentials)
+    if not raw:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
-    payload = decode_token(credentials.credentials)
+    payload = decode_token(raw)
     if payload.get("type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
     sub = payload.get("sub")

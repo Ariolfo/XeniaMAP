@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.v1.routes import router as v1_router
+from app.core.auth_cookies import ACCESS_COOKIE
 from app.core.config import get_max_upload_mb, settings
 from app.core.security import decode_token
 
@@ -52,10 +53,12 @@ _redis_client = None
 
 def _bearer_token_from_request(request: Request) -> str | None:
     auth = request.headers.get("Authorization", "").strip()
-    if not auth.lower().startswith("bearer "):
-        return None
-    token = auth[7:].strip()
-    return token or None
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        if token:
+            return token
+    cookie = request.cookies.get(ACCESS_COOKIE)
+    return cookie or None
 
 
 def _is_cliente_allowed_request(request: Request) -> bool:

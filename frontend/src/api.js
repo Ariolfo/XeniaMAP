@@ -30,16 +30,20 @@ function resolveApiBase() {
 
 export const API_URL = resolveApiBase();
 
+/** Marcador de sesión en React; los JWT viven solo en cookies HttpOnly (F5). */
+export const AUTH_SESSION_MARKER = "cookie";
+
 const SK_ACCESS = "xeniamap_access";
 const SK_REFRESH = "xeniamap_refresh";
+const SK_SESSION = "xeniamap_session";
 
 const EVT_AUTH_REFRESHED = "xeniamap:auth-refreshed";
 const EVT_AUTH_EXPIRED = "xeniamap:auth-expired";
 
-const api = axios.create({ baseURL: API_URL });
+const api = axios.create({ baseURL: API_URL, withCredentials: true });
 
 /** Petición sin interceptores (evita bucles al renovar token). */
-const rawClient = axios.create({ baseURL: API_URL });
+const rawClient = axios.create({ baseURL: API_URL, withCredentials: true });
 
 let refreshInFlight = null;
 
@@ -47,38 +51,81 @@ function readSessionKey(key) {
   return sessionStorage.getItem(key);
 }
 
+export function isCookieAuthToken(token) {
+  return !token || token === AUTH_SESSION_MARKER;
+}
+
+/**
+ * Opciones para `fetch` autenticado: cookies HttpOnly + credentials.
+ * Solo añade Bearer si `token` es un JWT real (compat / tests).
+ */
+export function authFetchInit(token, extra = {}) {
+  const headers = { ...(extra.headers || {}) };
+  if (token && !isCookieAuthToken(token)) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return {
+    ...extra,
+    credentials: "include",
+    headers,
+  };
+}
+
+/**
+ * F5: la app usa cookies HttpOnly. Si se pasa un JWT real, se mantiene Bearer
+ * (compatibilidad puntual); el marcador de sesión no escribe Authorization.
+ */
 export function setAuthToken(token) {
-  if (token) {
+  if (token && !isCookieAuthToken(token)) {
     api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
   } else {
     delete api.defaults.headers.common["Authorization"];
   }
 }
 
-export function persistAuthTokens(access, refresh) {
+function purgeLegacyJwtStorage() {
+  sessionStorage.removeItem(SK_ACCESS);
+  sessionStorage.removeItem(SK_REFRESH);
+  sessionStorage.removeItem("bioagromap_access");
+  sessionStorage.removeItem("bioagromap_refresh");
+}
+
+/** Marca sesión activa en sessionStorage sin guardar JWT. */
+export function persistAuthTokens(access, _refresh) {
   if (access) {
-    sessionStorage.setItem(SK_ACCESS, access);
+    purgeLegacyJwtStorage();
+    sessionStorage.setItem(SK_SESSION, "1");
+    setAuthToken(null);
+  } else {
+    clearAuthTokens();
   }
-  if (refresh) {
-    sessionStorage.setItem(SK_REFRESH, refresh);
-  }
-  setAuthToken(access || null);
 }
 
 export function clearAuthTokens() {
-  sessionStorage.removeItem(SK_ACCESS);
-  sessionStorage.removeItem(SK_REFRESH);
-  // Limpieza residual BioAgro (F1)
-  sessionStorage.removeItem("bioagromap_access");
-  sessionStorage.removeItem("bioagromap_refresh");
+  purgeLegacyJwtStorage();
+  sessionStorage.removeItem(SK_SESSION);
   setAuthToken(null);
 }
 
 export function loadStoredAuth() {
+  // Migración F5: si quedaron JWT en sessionStorage, solo conservar flag de sesión.
+  if (readSessionKey(SK_ACCESS) || readSessionKey(SK_REFRESH)) {
+    purgeLegacyJwtStorage();
+    sessionStorage.setItem(SK_SESSION, "1");
+  }
+  const ok = readSessionKey(SK_SESSION) === "1";
   return {
-    access: readSessionKey(SK_ACCESS),
-    refresh: readSessionKey(SK_REFRESH),
+    access: ok ? AUTH_SESSION_MARKER : null,
+    refresh: null,
   };
+}
+
+export async function logoutOnServer() {
+  try {
+    await rawClient.post("/auth/logout");
+  } catch {
+    /* cookie puede ya haber caducado */
+  }
 }
 
 function dispatchAuthEvent(name, detail) {
@@ -98,30 +145,35 @@ api.interceptors.response.use(
     if (
       reqUrl.includes("/auth/refresh") ||
       reqUrl.includes("/auth/login") ||
-      reqUrl.includes("/auth/register")
+      reqUrl.includes("/auth/register") ||
+      reqUrl.includes("/auth/verify-otp") ||
+      reqUrl.includes("/auth/request-otp") ||
+      reqUrl.includes("/auth/logout")
     ) {
       return Promise.reject(error);
     }
-    const refresh = readSessionKey(SK_REFRESH);
-    if (!refresh) {
+    const hasSession = readSessionKey(SK_SESSION) === "1";
+    if (!hasSession) {
       return Promise.reject(error);
     }
     config._retry = true;
     try {
       if (!refreshInFlight) {
         refreshInFlight = rawClient
-          .post("/auth/refresh", { refresh_token: refresh })
+          .post("/auth/refresh", {})
           .then((res) => res.data)
           .finally(() => {
             refreshInFlight = null;
           });
       }
-      const data = await refreshInFlight;
-      persistAuthTokens(data.access_token, data.refresh_token);
-      config.headers = config.headers || {};
-      config.headers.Authorization = `Bearer ${data.access_token}`;
+      await refreshInFlight;
+      persistAuthTokens(AUTH_SESSION_MARKER);
+      if (config.headers) {
+        delete config.headers.Authorization;
+        delete config.headers.authorization;
+      }
       dispatchAuthEvent(EVT_AUTH_REFRESHED, {
-        access_token: data.access_token,
+        access_token: AUTH_SESSION_MARKER,
       });
       return api(config);
     } catch (e) {

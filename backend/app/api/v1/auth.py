@@ -1,14 +1,16 @@
 import logging
+import os
 import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, issue_tokens, require_admin
+from app.core.auth_cookies import REFRESH_COOKIE, clear_auth_cookies, set_auth_cookies
 from app.core.config import settings
 from app.core.mail import send_otp_email, smtp_configured
-from app.core.otp_store import peek_otp_for_dev, set_otp, verify_and_consume_otp
+from app.core.otp_store import set_otp, verify_and_consume_otp
 from app.core.security import decode_token, hash_password, verify_password
 from app.db.session import get_db
 from app.models.models import Tenant, User, UserAuditLog
@@ -57,34 +59,51 @@ def _user_inactive_response():
     raise HTTPException(status_code=401, detail="Cuenta inactiva")
 
 
-@router.post("/auth/register", response_model=TokenResponse)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    tenant = db.query(Tenant).filter(Tenant.name == payload.tenant_name).first()
-    if tenant is None:
-        tenant = Tenant(name=payload.tenant_name)
-        db.add(tenant)
-        db.flush()
-    if db.query(User).filter(User.email == payload.email).first():
-        raise HTTPException(status_code=400, detail="Email already exists")
-    role = "admin" if settings.is_bootstrap_admin(payload.email) else "cliente"
-    user = User(
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-        tenant_id=tenant.id,
-        role=role,
-        full_name="",
-        is_active=True,
+def _issue_and_set_cookies(response: Response, user: User, extra: dict | None = None) -> dict:
+    tokens = issue_tokens(user, extra)
+    set_auth_cookies(
+        response,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return issue_tokens(user)
+    return tokens
+
+
+@router.post("/auth/register", response_model=TokenResponse, deprecated=True)
+def register(payload: RegisterRequest):
+    """Deshabilitado (F1): el alta pública debe pasar por OTP.
+
+    Usar ``POST /auth/request-otp`` y luego ``POST /auth/verify-otp``.
+    La creación de usuarios por admin sigue en ``POST /auth/users``.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Registro directo deshabilitado. "
+            "Use /auth/request-otp y /auth/verify-otp para verificar el correo."
+        ),
+    )
+
+
+@router.post("/auth/logout")
+def logout(response: Response):
+    """Limpia cookies HttpOnly de sesión (F5)."""
+    clear_auth_cookies(response)
+    return {"ok": True}
 
 
 @router.post("/auth/refresh", response_model=TokenResponse)
-def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)):
-    """Emite nuevos access/refresh tokens a partir de un refresh token válido."""
-    claims = decode_token(payload.refresh_token)
+def refresh_session(
+    request: Request,
+    response: Response,
+    payload: RefreshRequest = Body(default_factory=RefreshRequest),
+    db: Session = Depends(get_db),
+):
+    """Emite nuevos access/refresh a partir del body o de la cookie HttpOnly."""
+    raw = payload.refresh_token or request.cookies.get(REFRESH_COOKIE)
+    if not raw:
+        raise HTTPException(status_code=401, detail="Missing refresh token")
+    claims = decode_token(raw)
     if claims.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid token type")
     user = db.query(User).filter(User.id == int(claims["sub"])).first()
@@ -92,17 +111,17 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid user")
     if not getattr(user, "is_active", True):
         _user_inactive_response()
-    return issue_tokens(user)
+    return _issue_and_set_cookies(response, user)
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not getattr(user, "is_active", True):
         _user_inactive_response()
-    return issue_tokens(user)
+    return _issue_and_set_cookies(response, user)
 
 
 @router.post("/auth/check-email", response_model=CheckEmailResponse)
@@ -126,6 +145,11 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
         )
 
     simulate = bool(settings.otp_simulate)
+    if simulate and settings.is_production():
+        raise HTTPException(
+            status_code=503,
+            detail="OTP_SIMULATE no está permitido en producción. Configure SMTP_*.",
+        )
     if not simulate and not smtp_configured():
         raise HTTPException(
             status_code=503,
@@ -139,17 +163,19 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
     set_otp(email, code, ttl_sec=int(settings.otp_ttl_sec))
 
     if simulate:
+        # F2: nunca devolver el OTP en el body JSON (ni con OTP_SIMULATE).
         logger.warning(
-            "OTP_SIMULATE activo — código emitido para dominio=%s",
+            "OTP_SIMULATE activo — código emitido para dominio=%s (no se incluye en la respuesta)",
             email.split("@")[-1],
         )
-        dbg = peek_otp_for_dev(email) or code
+        if os.environ.get("LOG_OTP", "").strip().lower() in {"1", "true", "yes"}:
+            logger.warning("LOG_OTP=1 — OTP de desarrollo para %s: %s", email, code)
         return {
             "message": (
-                "Modo desarrollo (OTP_SIMULATE): use el código mostrado. "
-                "No usar en producción."
+                "Modo desarrollo (OTP_SIMULATE): código almacenado en el servidor. "
+                "No se expone en la API. Con LOG_OTP=1 aparece solo en logs del backend."
             ),
-            "debug_otp": dbg,
+            "debug_otp": None,
         }
 
     sent = send_otp_email(email, code)
@@ -165,7 +191,11 @@ def request_registration_otp(payload: RequestOtpRequest, db: Session = Depends(g
 
 
 @router.post("/auth/verify-otp", response_model=TokenResponse)
-def verify_otp_and_register(payload: VerifyOtpRegisterRequest, db: Session = Depends(get_db)):
+def verify_otp_and_register(
+    payload: VerifyOtpRegisterRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+):
     email = str(payload.email).strip().lower()
     if not verify_and_consume_otp(email, payload.code):
         raise HTTPException(status_code=400, detail="Código incorrecto o expirado.")
@@ -175,7 +205,7 @@ def verify_otp_and_register(payload: VerifyOtpRegisterRequest, db: Session = Dep
             raise HTTPException(status_code=400, detail="Usuario admin requiere contraseña.")
         if not getattr(existing, "is_active", True):
             _user_inactive_response()
-        return issue_tokens(existing)
+        return _issue_and_set_cookies(response, existing)
     tenant_name = email.split("@")[-1] if "@" in email else "default"
     tenant = db.query(Tenant).filter(Tenant.name == tenant_name).first()
     if tenant is None:
@@ -195,7 +225,7 @@ def verify_otp_and_register(payload: VerifyOtpRegisterRequest, db: Session = Dep
     db.add(user)
     db.commit()
     db.refresh(user)
-    return issue_tokens(user, {"temporary_password": auto_pw})
+    return _issue_and_set_cookies(response, user, {"temporary_password": auto_pw})
 
 
 @router.get("/auth/me", response_model=UserMeResponse)
@@ -215,10 +245,27 @@ def _user_summary(u: User) -> dict:
     }
 
 
+def _tenant_user_or_404(db: Session, admin: User, user_id: int) -> User:
+    """F3: admins solo gestionan usuarios de su mismo tenant."""
+    user = (
+        db.query(User)
+        .filter(User.id == user_id, User.tenant_id == admin.tenant_id)
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
 @router.get("/auth/users/audit-log", response_model=list[UserAuditLogEntry])
-def list_user_audit_log(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
+def list_user_audit_log(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    tenant_user_ids = db.query(User.id).filter(User.tenant_id == admin.tenant_id)
     rows = (
         db.query(UserAuditLog)
+        .filter(
+            (UserAuditLog.actor_user_id.in_(tenant_user_ids))
+            | (UserAuditLog.target_user_id.in_(tenant_user_ids))
+        )
         .order_by(UserAuditLog.created_at.desc())
         .limit(500)
         .all()
@@ -239,8 +286,13 @@ def list_user_audit_log(db: Session = Depends(get_db), _admin: User = Depends(re
 
 
 @router.get("/auth/users", response_model=list[UserSummaryResponse])
-def list_users(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
-    users = db.query(User).order_by(User.id.asc()).all()
+def list_users(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    users = (
+        db.query(User)
+        .filter(User.tenant_id == admin.tenant_id)
+        .order_by(User.id.asc())
+        .all()
+    )
     return [_user_summary(u) for u in users]
 
 
@@ -295,9 +347,7 @@ def update_user_role(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _tenant_user_or_404(db, admin, user_id)
     old_role = user.role
     if old_role != payload.role:
         user.role = payload.role
@@ -321,9 +371,7 @@ def update_user_active(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _tenant_user_or_404(db, admin, user_id)
     if user_id == admin.id and not payload.is_active:
         raise HTTPException(status_code=400, detail="No puede inactivar su propia cuenta")
     prev = bool(getattr(user, "is_active", True))
@@ -356,9 +404,7 @@ def admin_delete_user(
 ):
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="No puede eliminar su propia cuenta")
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    user = _tenant_user_or_404(db, admin, user_id)
     snap = {
         "email": user.email,
         "full_name": getattr(user, "full_name", "") or "",

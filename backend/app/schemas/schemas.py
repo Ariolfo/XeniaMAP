@@ -28,7 +28,9 @@ class TokenResponse(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    """Refresh opcional: si falta, se usa la cookie HttpOnly ``xeniamap_refresh`` (F5)."""
+
+    refresh_token: str | None = None
 
 
 class UserMeResponse(BaseModel):

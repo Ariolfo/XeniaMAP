@@ -84,8 +84,9 @@ Stub IA (opcional): `docker compose --profile ai up -d --build ai_service`
 
 ### Auth (F0)
 
-- Producción: `OTP_SIMULATE=0` + `SMTP_*` (código por correo; sin `debug_otp` en API)
-- Desarrollo: `OTP_SIMULATE=1` (código aleatorio + `debug_otp` solo en ese modo)
+- Producción: `OTP_SIMULATE=0` + `SMTP_*` (código por correo; **nunca** `debug_otp` en API)
+- Desarrollo: `OTP_SIMULATE=1` almacena el OTP en servidor; opcional `LOG_OTP=1` solo en logs del backend (no en JSON)
+- `APP_ENV=production` + `OTP_SIMULATE=1` → la app no arranca / request-otp responde 503
 - Admins bootstrap: `ADMIN_EMAILS` (coma-separados); el rol en DB manda para usuarios existentes
 
 ### Disco externo Data_XeniaMap

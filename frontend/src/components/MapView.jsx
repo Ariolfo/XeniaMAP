@@ -112,13 +112,8 @@ export default function MapView({
             ((url.includes("/fire-orders/") && url.includes("/results/tiles/")) ||
               (url.includes("/layers/") && url.includes("/tiles/") && url.includes(".mvt")))
           ) {
-            const access = sessionStorage.getItem("xeniamap_access");
-            if (access) {
-              return {
-                url,
-                headers: { Authorization: `Bearer ${access}` },
-              };
-            }
+            // F5: cookies HttpOnly (mismo origen / proxy Vite)
+            return { url, credentials: "include" };
           }
           return { url };
         },
@@ -201,7 +196,7 @@ export default function MapView({
               id: layer.id,
               type: "raster",
               source: layer.id,
-              paint: { "raster-opacity": 0.85 },
+              paint: { "raster-opacity": layer.metadata?.uiOpacity ?? 0.85 },
               layout: { visibility: layer.visible ? "visible" : "none" },
             });
           } catch (_) {
@@ -240,7 +235,7 @@ export default function MapView({
             id: layer.id,
             type: "raster",
             source: layer.id,
-            paint: { "raster-opacity": 0.85 },
+            paint: { "raster-opacity": layer.metadata?.uiOpacity ?? 0.85 },
             layout: { visibility: layer.visible ? "visible" : "none" },
           });
         } catch (_) {

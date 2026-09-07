@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,10 @@ def _settings_model_config() -> SettingsConfigDict:
 
 class Settings(BaseSettings):
     app_name: str = "XeniaMAP API"
+    app_env: str = Field(
+        default="dev",
+        description="Entorno: dev|staging|production (APP_ENV). En production, OTP_SIMULATE=1 está prohibido.",
+    )
     api_v1_prefix: str = "/api/v1"
     secret_key: str = ""
     algorithm: str = "HS256"
@@ -130,6 +134,21 @@ class Settings(BaseSettings):
 
     def is_bootstrap_admin(self, email: str) -> bool:
         return str(email or "").strip().lower() in self.bootstrap_admin_emails()
+
+    def is_production(self) -> bool:
+        return str(self.app_env or "").strip().lower() in {"production", "prod"}
+
+    @model_validator(mode="after")
+    def _normalize_env_and_forbid_otp_simulate_in_prod(self):
+        env = str(self.app_env or "").strip().lower()
+        if not env:
+            env = (os.getenv("ENVIRONMENT") or "dev").strip().lower()
+        object.__setattr__(self, "app_env", env or "dev")
+        if self.otp_simulate and self.is_production():
+            raise ValueError(
+                "OTP_SIMULATE cannot be enabled when APP_ENV/ENVIRONMENT is production"
+            )
+        return self
 
     @field_validator("secret_key")
     @classmethod

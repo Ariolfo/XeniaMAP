@@ -83,13 +83,15 @@ export default function AuthPanel({
 
       {authStep === "otp" ? (
         <>
+          {otpHint ? <p className="auth-otp-hint">{otpHint}</p> : null}
+          {!otpHint ? (
+            <p className="auth-otp-hint">Revise su correo e ingrese el código de 8 dígitos.</p>
+          ) : null}
           {otpDebug ? (
             <p className="auth-otp-debug">
               <strong>Modo desarrollo:</strong> código <code>{otpDebug}</code>
             </p>
-          ) : (
-            <p className="auth-otp-hint">Revise su correo e ingrese el código de 8 dígitos.</p>
-          )}
+          ) : null}
           <label>
             Código de verificación
             <input

@@ -1,4 +1,4 @@
-import api, { API_URL, loadStoredAuth, setAuthToken } from "../api";
+import api, { API_URL, authFetchInit, loadStoredAuth, setAuthToken } from "../api";
 
 export const SENSOR_META = {
   s1: { id: "s1", title: "Sentinel-1", variant: "s1", defaultIndex: "RVI", kind: "radar" },
@@ -173,10 +173,7 @@ export async function fetchPreviewDataUrl(fullUrl, token) {
   } catch {
     /* fallback fetch */
   }
-  const resp = await fetch(url, {
-    headers: tok ? { Authorization: `Bearer ${tok}` } : undefined,
-    cache: "no-store",
-  });
+  const resp = await fetch(url, authFetchInit(tok, { cache: "no-store" }));
   if (!resp.ok) throw new Error(`Preview ${resp.status}`);
   const blob = await resp.blob();
   const ab = await blob.arrayBuffer();
@@ -187,7 +184,7 @@ export async function fetchPreviewDataUrl(fullUrl, token) {
 }
 
 /**
- * Descarga una imagen protegida (JWT) y la devuelve como data-URL con su mime real.
+ * Descarga una imagen protegida (JWT/cookie) y la devuelve como data-URL con su mime real.
  * Acepta rutas relativas tipo /api/v1/... (se resuelven contra el backend configurado).
  */
 export async function fetchAuthedImageDataUrl(pathOrUrl, token) {
@@ -200,10 +197,7 @@ export async function fetchAuthedImageDataUrl(pathOrUrl, token) {
     const backendRoot = API_URL.replace(/\/api\/v1$/i, "");
     url = `${backendRoot}${src.startsWith("/") ? "" : "/"}${src}`;
   }
-  const resp = await fetch(url, {
-    headers: tok ? { Authorization: `Bearer ${tok}` } : undefined,
-    cache: "no-store",
-  });
+  const resp = await fetch(url, authFetchInit(tok, { cache: "no-store" }));
   if (!resp.ok) throw new Error(`Imagen ${resp.status}`);
   const blob = await resp.blob();
   return await new Promise((resolve, reject) => {

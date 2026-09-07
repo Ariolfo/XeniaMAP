@@ -2,7 +2,7 @@
 import api, { API_URL } from "../api";
 
 /**
- * Plantilla MapLibre ``tiles`` (Bearer vía transformRequest en MapView).
+ * Plantilla MapLibre ``tiles`` (auth vía cookies HttpOnly + credentials en MapView).
  */
 export function fireRasterTilesTemplate(orderId, filename, severityClass = null) {
   const base = String(API_URL || "").replace(/\/$/, "");

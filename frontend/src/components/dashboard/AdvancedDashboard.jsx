@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import api, { API_URL, formatApiErrorDetail, loadStoredAuth, setAuthToken } from "../../api";
+import api, { API_URL, authFetchInit, formatApiErrorDetail, loadStoredAuth, setAuthToken } from "../../api";
 import { getClientBrand } from "../../branding";
 import SensorTimelapseViewer from "./SensorTimelapseViewer";
 import ClientSoilViewModal from "./ClientSoilViewModal";
@@ -121,10 +121,7 @@ async function fetchPreviewObjectUrl(fullUrl, token) {
   } catch {
     // 2) Fallback directo por si hay edge-cases con axios + absolute URL.
   }
-  const resp = await fetch(url, {
-    headers: tok ? { Authorization: `Bearer ${tok}` } : undefined,
-    cache: "no-store",
-  });
+  const resp = await fetch(url, authFetchInit(tok, { cache: "no-store" }));
   if (!resp.ok) throw new Error(`Preview ${resp.status}`);
   const blob = await resp.blob();
   if (!blob || blob.size === 0) throw new Error("Preview vacío");

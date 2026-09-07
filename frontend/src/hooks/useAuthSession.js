@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import api, {
+  AUTH_SESSION_MARKER,
   clearAuthTokens,
   loadStoredAuth,
+  logoutOnServer,
   persistAuthTokens,
   setAuthToken,
 } from "../api";
@@ -9,7 +11,7 @@ import { clearViewerEmail, persistViewerEmail, usesGeovisorBrand } from "../bran
 import { normalizeUserRole } from "../utils/userRole";
 
 /**
- * Sesión: login/OTP/logout + restauración de token.
+ * Sesión: login/OTP/logout + restauración vía cookies HttpOnly (F5).
  */
 export default function useAuthSession({
   navigate,
@@ -44,10 +46,10 @@ export default function useAuthSession({
   const isCliente = normalizedUserRole === "cliente";
 
   useEffect(() => {
-    const { access, refresh } = loadStoredAuth();
-    if (access && refresh) {
-      setToken(access);
-      persistAuthTokens(access, refresh);
+    const { access } = loadStoredAuth();
+    if (access) {
+      setToken(AUTH_SESSION_MARKER);
+      persistAuthTokens(AUTH_SESSION_MARKER);
     }
   }, []);
 
@@ -112,8 +114,8 @@ export default function useAuthSession({
   }, [token, normalizedUserRole, setSidebarTab]);
 
   useEffect(() => {
-    const onRefreshed = (e) => {
-      if (e.detail?.access_token) setToken(e.detail.access_token);
+    const onRefreshed = () => {
+      setToken(AUTH_SESSION_MARKER);
     };
     const onExpired = () => {
       setToken("");
@@ -140,38 +142,6 @@ export default function useAuthSession({
     setTargetRasterId,
   ]);
 
-  const registerAndLogin = useCallback(async () => {
-    const effectiveEmail = email.trim();
-    const effectivePassword = password.trim();
-    if (!effectiveEmail || !effectivePassword) {
-      setMessage("Error: ingresa email y password para crear cuenta.");
-      return;
-    }
-    setLoading(true);
-    setMessage("");
-    const tenantName = effectiveEmail.split("@")[1] || "default";
-    try {
-      const res = await api.post("/auth/register", {
-        tenant_name: tenantName,
-        email: effectiveEmail,
-        password: effectivePassword,
-      });
-      const accessToken = res.data.access_token;
-      setToken(accessToken);
-      setUserRole(normalizeUserRole(res.data?.role));
-      persistAuthTokens(accessToken, res.data.refresh_token);
-      persistViewerEmail(effectiveEmail);
-      const userProjects = await fetchProjects(accessToken);
-      setMessage(`Cuenta creada. ${userProjects.length} proyecto(s) encontrado(s).`);
-      navigate("/app");
-    } catch (error) {
-      const detail = error?.response?.data?.detail || error.message || "Error al crear cuenta";
-      setMessage(`Error: ${detail}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [email, fetchProjects, navigate, password, setLoading, setMessage]);
-
   const loginWithCredentials = useCallback(async () => {
     setLoading(true);
     setMessage("");
@@ -187,14 +157,13 @@ export default function useAuthSession({
         email: effectiveEmail,
         password: effectivePassword,
       });
-      const accessToken = res.data.access_token;
       const role = normalizeUserRole(res.data?.role);
-      setToken(accessToken);
+      setToken(AUTH_SESSION_MARKER);
       setUserRole(role);
-      persistAuthTokens(accessToken, res.data.refresh_token);
+      persistAuthTokens(AUTH_SESSION_MARKER);
       persistViewerEmail(effectiveEmail);
-      const userProjects = await fetchProjects(accessToken, "agro");
-      const fireProjects = await fetchProjects(accessToken, "fire");
+      const userProjects = await fetchProjects(AUTH_SESSION_MARKER, "agro");
+      const fireProjects = await fetchProjects(AUTH_SESSION_MARKER, "fire");
       const fireCount = (fireProjects || []).length;
       setMessage(
         fireCount
@@ -286,14 +255,13 @@ export default function useAuthSession({
       setMessage("");
       try {
         const res = await api.post("/auth/verify-otp", { email: pendingRegEmail, code: c });
-        const accessToken = res.data.access_token;
         const role = normalizeUserRole(res.data?.role);
-        setToken(accessToken);
+        setToken(AUTH_SESSION_MARKER);
         setUserRole(role);
-        persistAuthTokens(accessToken, res.data.refresh_token);
+        persistAuthTokens(AUTH_SESSION_MARKER);
         persistViewerEmail(pendingRegEmail);
-        const userProjects = await fetchProjects(accessToken, "agro");
-        const fireProjects = await fetchProjects(accessToken, "fire");
+        const userProjects = await fetchProjects(AUTH_SESSION_MARKER, "agro");
+        const fireProjects = await fetchProjects(AUTH_SESSION_MARKER, "fire");
         const fireCount = (fireProjects || []).length;
         const tpw = res.data.temporary_password;
         if (tpw) {
@@ -316,7 +284,7 @@ export default function useAuthSession({
         navigate("/app");
       } catch (error) {
         const detail =
-          error?.response?.data?.detail || error.message || "Código incorrecto o expirado";
+          error?.response?.data?.detail || error.message || "Error al verificar el código";
         setMessage(`Error: ${detail}`);
       } finally {
         setLoading(false);
@@ -334,6 +302,7 @@ export default function useAuthSession({
   );
 
   const logoutSession = useCallback(() => {
+    void logoutOnServer();
     setToken("");
     setUserRole("");
     clearAuthTokens();
@@ -384,7 +353,6 @@ export default function useAuthSession({
     normalizedUserRole,
     isAdmin,
     isCliente,
-    registerAndLogin,
     loginWithCredentials,
     resetEmailAuthStep,
     continueEmailFlow,

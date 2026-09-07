@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import api, { API_URL, formatApiErrorDetail, setAuthToken } from "../api";
+import api, { API_URL, authFetchInit, formatApiErrorDetail, setAuthToken } from "../api";
 import {
   formatRecorteDisplayName,
   rasterSortKeyFromMetadata,
@@ -23,10 +23,7 @@ async function loadEmbeddedGalleryPreviewUrl(token, url, blobUrlsRef) {
     /* fallback fetch */
   }
   try {
-    const resp = await fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      cache: "no-store",
-    });
+    const resp = await fetch(url, authFetchInit(token, { cache: "no-store" }));
     if (!resp.ok) return null;
     const blob = await resp.blob();
     if (!blob.size) return null;
@@ -44,10 +41,7 @@ async function loadGalleryPreviewUrl(token, url, blobUrlsRef, embedded) {
   }
   if (!url) return null;
   try {
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-      cache: "no-store",
-    });
+    const resp = await fetch(url, authFetchInit(token, { cache: "no-store" }));
     if (resp.ok) {
       const blob = await resp.blob();
       const objectUrl = URL.createObjectURL(blob);

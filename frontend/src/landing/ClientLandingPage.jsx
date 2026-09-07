@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import api, {
+  AUTH_SESSION_MARKER,
   formatApiErrorDetail,
   loadStoredAuth,
   persistAuthTokens,
@@ -101,8 +102,8 @@ export default function ClientLandingPage({ mode: modeProp }) {
         setAuthError("Inicie sesión para ver los resultados de su proyecto.");
         return;
       }
-      persistAuthTokens(stored.access, stored.refresh);
-      setToken(stored.access);
+      persistAuthTokens(AUTH_SESSION_MARKER);
+      setToken(AUTH_SESSION_MARKER);
       try {
         const [me, projRes] = await Promise.all([
           api.get("/auth/me"),
